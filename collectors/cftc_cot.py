@@ -63,6 +63,7 @@ def fetch():
                     records.append({
                         'date': date_str,
                         'series_id': series_id,
+                        'market_name': name,
                         'open_interest': oi,
                         'nc_long': nc_long,
                         'nc_short': nc_short,
@@ -76,14 +77,20 @@ def fetch():
 
 def main():
     recs = fetch()
-    print(f'拿到 {len(recs)} 条')
-    for r in recs:
-        print(r)
+    print(f'原始 {len(recs)} 条')
     if not recs:
         print('❌ 无数据')
         sys.exit(1)
 
     df_new = pd.DataFrame(recs)
+
+    # 去重：同 series_id 只保留 open_interest 最大的（主合约）
+    df_new = (df_new.sort_values('open_interest', ascending=False)
+                    .drop_duplicates(subset=['series_id'], keep='first'))
+    print(f'去重后 {len(df_new)} 条')
+    for _, row in df_new.iterrows():
+        print(f"  {row['series_id']}: {row['market_name'][:40]} (OI={row['open_interest']})")
+
     df_new['retrieved_at'] = datetime.utcnow().isoformat()
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

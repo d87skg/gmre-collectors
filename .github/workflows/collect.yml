@@ -21,7 +21,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install deps
-        run: pip install pandas requests lxml html5lib
+        run: pip install pandas requests lxml html5lib curl_cffi
 
       - name: Run collectors
         run: |
