@@ -29,6 +29,7 @@ def gen_sign(timestamp, secret):
 def build_message():
     lines = ["📊 GMRE 数据更新", ""]
 
+    # === CFTC ===
     p = Path('data/cftc_cot.csv')
     if p.exists():
         df = pd.read_csv(p)
@@ -42,14 +43,21 @@ def build_message():
                 lines.append(f"  {sid}: {net:+,}")
             lines.append("")
 
+            # === Farside ===
     p = Path('data/farside_btc_etf.csv')
     if p.exists():
         try:
             df = pd.read_csv(p)
-            if not df.empty and len(df.columns) > 1:
+            # 只保留日期行（如 "01 Oct 2026"）
+            mask = df.iloc[:, 0].astype(str).str.match(r'\d{2} \w{3} \d{4}')
+            df = df[mask]
+            # 第 13 列是 Total，只保留有数字的行
+            total_col = pd.to_numeric(df.iloc[:, 13], errors='coerce')
+            df = df[total_col.notna() & (total_col != 0)]
+            if not df.empty:
                 last = df.iloc[-1]
                 date = last.iloc[0]
-                total = last.iloc[-2]
+                total = last.iloc[13]
                 lines.append(f"📈 BTC ETF Flow")
                 lines.append(f"  {date}: {total}")
                 lines.append("")
