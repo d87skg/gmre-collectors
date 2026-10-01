@@ -43,3 +43,12 @@ jobs:
             git commit -m "data: $(date -u +%Y-%m-%d)"
             git push || echo "push 失败"
           fi
+
+      - name: Notify Feishu
+        if: always()
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+        run: |
+          pip install pandas requests
+          python collectors/notify_feishu.py
