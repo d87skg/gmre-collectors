@@ -50,10 +50,10 @@ def fetch():
         parts = line.split(',')
         if len(parts) < 12:
             continue
-        # 关键修复：去引号
         name = parts[0].strip().strip('"').strip()
         for keyword, series_id in TARGETS.items():
-            if keyword in name:
+            # 用 startswith 前缀匹配，避免 "UST BOND" 命中 "ULTRA UST BOND"
+            if name.startswith(keyword + ' -') or name == keyword:
                 try:
                     date_str = parts[2].strip()
                     oi = int(parts[7])
