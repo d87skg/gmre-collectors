@@ -21,7 +21,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install deps
-        run: pip install pandas requests lxml html5lib curl_cffi
+        run: pip install pandas requests lxml html5lib curl_cffi cme-fedwatch
 
       - name: Run collectors
         run: |
@@ -31,6 +31,7 @@ jobs:
           python collectors/deribit_dvol.py || echo "Deribit failed"
           python collectors/blockchain_com.py || echo "Blockchain failed"
           python collectors/fear_greed.py || echo "FearGreed failed"
+          python collectors/cme_fedwatch.py || echo "CME failed"
 
       - name: List data
         run: ls -la data/
