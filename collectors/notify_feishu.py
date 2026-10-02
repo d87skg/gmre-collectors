@@ -129,14 +129,14 @@ def build_message():
             lines.append(f"🏛️ CME 解析失败: {e}")
             lines.append("")
 
-    # === Binance 资金费率 ===
-    p = Path('data/binance_funding.csv')
+        # === OKX 资金费率 ===
+    p = Path('data/okx_funding.csv')
     if p.exists():
         try:
             df = pd.read_csv(p).sort_values('datetime')
             latest_dt = df['datetime'].max()
             df = df[df['datetime'] == latest_dt]
-            lines.append(f"💰 Binance Funding ({latest_dt} UTC)")
+            lines.append(f"💰 OKX Funding ({latest_dt} UTC)")
             for _, r in df.iterrows():
                 sym = str(r['symbol']).replace('USDT', '')
                 rate = float(r['funding_rate']) * 100
@@ -146,18 +146,18 @@ def build_message():
             lines.append(f"💰 Funding 解析失败: {e}")
             lines.append("")
 
-    # === Binance OI ===
-    p = Path('data/binance_oi.csv')
+    # === OKX OI ===
+    p = Path('data/okx_oi.csv')
     if p.exists():
         try:
             df = pd.read_csv(p).sort_values('datetime')
             latest_dt = df['datetime'].max()
             df = df[df['datetime'] == latest_dt]
-            lines.append(f"📊 Binance OI ({latest_dt} UTC)")
+            lines.append(f"📊 OKX OI ({latest_dt} UTC)")
             for _, r in df.iterrows():
                 sym = str(r['symbol']).replace('USDT', '')
-                oi_val = float(r['oi_value']) / 1e9
-                lines.append(f"  {sym}: ${oi_val:.2f}B")
+                oi_usd = float(r['oi_usd']) / 1e9
+                lines.append(f"  {sym}: ${oi_usd:.2f}B")
             lines.append("")
         except Exception as e:
             lines.append(f"📊 OI 解析失败: {e}")

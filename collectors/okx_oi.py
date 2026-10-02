@@ -1,6 +1,6 @@
 """
-Binance 未平仓合约量（Open Interest）
-API: https://fapi.binance.com/futures/data/openInterestHist
+OKX 未平仓合约量（替代 Binance）
+API: https://www.okx.com/api/v5/public/open-interest
 无需 key
 """
 import requests
@@ -9,40 +9,42 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-OUT = Path('data/binance_oi.csv')
-BASE = 'https://fapi.binance.com/futures/data'
+OUT = Path('data/okx_oi.csv')
+BASE = 'https://www.okx.com/api/v5/public/open-interest'
 
-SYMBOLS = ['BTCUSDT', 'ETHUSDT']
+INST_IDS = ['BTC-USDT-SWAP', 'ETH-USDT-SWAP']
 
 
-def fetch(symbol, period='1h', limit=100):
-    url = f'{BASE}/openInterestHist'
-    params = {'symbol': symbol, 'period': period, 'limit': limit}
-    r = requests.get(url, params=params, timeout=30)
+def fetch(inst_id):
+    params = {'instType': 'SWAP', 'instId': inst_id}
+    r = requests.get(BASE, params=params, timeout=30)
     r.raise_for_status()
     data = r.json()
+    if data.get('code') != '0':
+        raise RuntimeError(f'API 返回异常: {data}')
     rows = []
-    for item in data:
-        ts = int(item['timestamp']) / 1000
+    for item in data['data']:
+        ts = int(item['ts']) / 1000
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
         rows.append({
             'datetime': dt.strftime('%Y-%m-%d %H:%M'),
-            'symbol': symbol,
-            'oi': float(item['sumOpenInterest']),
-            'oi_value': float(item['sumOpenInterestValue']),
+            'symbol': inst_id.replace('-USDT-SWAP', ''),
+            'oi': float(item['oi']),
+            'oi_ccy': float(item.get('oiCcy', 0)),
+            'oi_usd': float(item.get('oiUsd', 0)),
         })
     return rows
 
 
 def main():
     all_rows = []
-    for sym in SYMBOLS:
+    for iid in INST_IDS:
         try:
-            rows = fetch(sym)
-            print(f'{sym}: {len(rows)} 条')
+            rows = fetch(iid)
+            print(f'{iid}: {len(rows)} 条')
             all_rows.extend(rows)
         except Exception as e:
-            print(f'{sym} 失败: {e}')
+            print(f'{iid} 失败: {e}')
 
     if not all_rows:
         print('❌ 无数据')

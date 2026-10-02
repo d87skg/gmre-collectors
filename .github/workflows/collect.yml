@@ -32,8 +32,8 @@ jobs:
           python collectors/blockchain_com.py || echo "Blockchain failed"
           python collectors/fear_greed.py || echo "FearGreed failed"
           python collectors/fetch_fedwatch.py || echo "CME failed"
-          python collectors/binance_funding.py || echo "Binance funding failed"
-          python collectors/binance_oi.py || echo "Binance OI failed"
+          python collectors/okx_funding.py || echo "OKX funding failed"
+          python collectors/okx_oi.py || echo "OKX OI failed"
           python collectors/okx_liquidation.py || echo "OKX liq failed"
 
       - name: List data
