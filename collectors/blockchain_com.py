@@ -6,21 +6,19 @@ API: https://api.blockchain.info/charts/{chart}
 import requests
 import pandas as pd
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 OUT = Path('data/blockchain_com.csv')
 BASE = 'https://api.blockchain.info/charts'
 
-# 免费的 chart 名称
+# 只保留支持 timespan 的端点（去掉 total-bitcoins / market-cap，它们返回全历史）
 CHARTS = [
     'market-price',
     'n-transactions',
     'n-unique-addresses',
     'miners-revenue',
     'transaction-fees-usd',
-    'total-bitcoins',
-    'market-cap',
     'hash-rate',
 ]
 
@@ -50,17 +48,18 @@ def main():
         print('❌ 无数据')
         sys.exit(1)
 
-    # 把所有 chart 合并成一张表（按日期）
     frames = []
     for chart, series in all_series.items():
         df = pd.DataFrame(series, columns=['ts', chart])
         df['date'] = pd.to_datetime(df['ts'], unit='s', utc=True).dt.strftime('%Y-%m-%d')
+        # 关键：同一天多条只保留最后一条
+        df = df.drop_duplicates(subset=['date'], keep='last')
         df = df[['date', chart]]
         frames.append(df)
 
     from functools import reduce
     df = reduce(lambda a, b: pd.merge(a, b, on='date', how='outer'), frames)
-    df = df.sort_values('date')
+    df = df.sort_values('date').reset_index(drop=True)
     df['retrieved_at'] = datetime.utcnow().isoformat()
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -69,7 +68,7 @@ def main():
         df_old = pd.read_csv(OUT)
         df = pd.concat([df_old, df]).drop_duplicates(
             subset=['date'], keep='last'
-        ).sort_values('date')
+        ).sort_values('date').reset_index(drop=True)
 
     df.to_csv(OUT, index=False)
     print(f'已保存: {OUT} ({len(df)} 行)')

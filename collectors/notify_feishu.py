@@ -17,7 +17,6 @@ SECRET = os.environ.get('FEISHU_SECRET')
 
 
 def gen_sign(timestamp, secret):
-    """飞书签名算法"""
     string_to_sign = f'{timestamp}\n{secret}'
     hmac_code = hmac.new(
         string_to_sign.encode('utf-8'),
@@ -68,20 +67,28 @@ def build_message():
     p = Path('data/blockchain_com.csv')
     if p.exists():
         try:
-            df = pd.read_csv(p)
-            latest = df.sort_values('date').iloc[-1]
-            date = latest['date']
-            price = latest.get('market-price')
-            txs = latest.get('n-transactions')
-            addr = latest.get('n-unique-addresses')
-            lines.append(f"⛓️ BTC On-chain ({date})")
-            if pd.notna(price):
-                lines.append(f"  价格: ${float(price):,.0f}")
-            if pd.notna(txs):
-                lines.append(f"  日交易: {int(txs):,}")
-            if pd.notna(addr):
-                lines.append(f"  活跃地址: {int(addr):,}")
-            lines.append("")
+            df = pd.read_csv(p).sort_values('date')
+            if 'n-transactions' in df.columns:
+                df = df[df['n-transactions'].notna()]
+            if df.empty:
+                lines.append("⛓️ BTC On-chain 无完整数据")
+                lines.append("")
+            else:
+                latest = df.iloc[-1]
+                date = latest['date']
+                lines.append(f"⛓️ BTC On-chain ({date})")
+                if pd.notna(latest.get('market-price')):
+                    lines.append(f"  价格: ${float(latest['market-price']):,.0f}")
+                if pd.notna(latest.get('n-transactions')):
+                    lines.append(f"  日交易: {int(latest['n-transactions']):,}")
+                if pd.notna(latest.get('n-unique-addresses')):
+                    lines.append(f"  活跃地址: {int(latest['n-unique-addresses']):,}")
+                if pd.notna(latest.get('miners-revenue')):
+                    lines.append(f"  矿工收入: ${float(latest['miners-revenue']):,.0f}")
+                if pd.notna(latest.get('hash-rate')):
+                    hr = float(latest['hash-rate']) / 1e9
+                    lines.append(f"  算力: {hr:.2f} EH/s")
+                lines.append("")
         except Exception as e:
             lines.append(f"⛓️ On-chain 解析失败: {e}")
             lines.append("")
@@ -107,10 +114,8 @@ def build_message():
     if p.exists():
         try:
             df = pd.read_csv(p)
-            # 只保留日期行（如 "01 Oct 2026"）
             mask = df.iloc[:, 0].astype(str).str.match(r'\d{2} \w{3} \d{4}')
             df = df[mask]
-            # 第 13 列是 Total，只保留有数字且非 0 的行
             total_col = pd.to_numeric(df.iloc[:, 13], errors='coerce')
             df = df[total_col.notna() & (total_col != 0)]
             if not df.empty:
