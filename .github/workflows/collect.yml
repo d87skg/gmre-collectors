@@ -23,7 +23,7 @@ jobs:
       - name: Install deps
         run: pip install pandas requests lxml html5lib curl_cffi
 
-            - name: Run collectors
+      - name: Run collectors
         run: |
           mkdir -p data/
           python collectors/cftc_cot.py || echo "CFTC failed"
