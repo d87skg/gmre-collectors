@@ -119,37 +119,38 @@ def build_message():
             lines.append(f"🪙 DefiLlama 解析失败: {e}")
             lines.append("")
 
-    # === Bybit Funding + OI ===
-    p = Path('data/bybit_funding.csv')
+        # === Deribit Funding ===
+    p = Path('data/deribit_funding.csv')
     if p.exists():
         try:
             df = pd.read_csv(p).sort_values('datetime')
             latest_dt = df['datetime'].max()
             df = df[df['datetime'] == latest_dt]
-            lines.append(f"💰 Bybit Funding ({latest_dt} UTC)")
+            lines.append(f"💰 Deribit Funding ({latest_dt} UTC)")
             for _, r in df.iterrows():
-                sym = str(r['symbol']).replace('USDT', '')
+                sym = str(r['symbol'])
                 rate = float(r['funding_rate']) * 100
                 lines.append(f"  {sym}: {rate:+.4f}%")
             lines.append("")
         except Exception as e:
-            lines.append(f"💰 Bybit Funding 解析失败: {e}")
+            lines.append(f"💰 Deribit Funding 解析失败: {e}")
             lines.append("")
 
-    p = Path('data/bybit_oi.csv')
+    # === Deribit OI ===
+    p = Path('data/deribit_oi.csv')
     if p.exists():
         try:
             df = pd.read_csv(p).sort_values('datetime')
             latest_dt = df['datetime'].max()
             df = df[df['datetime'] == latest_dt]
-            lines.append(f"📊 Bybit OI ({latest_dt} UTC)")
+            lines.append(f"📊 Deribit OI ({latest_dt} UTC)")
             for _, r in df.iterrows():
-                sym = str(r['symbol']).replace('USDT', '')
-                oi_val = float(r['oi_value']) / 1e9
-                lines.append(f"  {sym}: ${oi_val:.2f}B")
+                sym = str(r['symbol'])
+                oi_usd = float(r['oi_usd']) / 1e9
+                lines.append(f"  {sym}: ${oi_usd:.2f}B")
             lines.append("")
         except Exception as e:
-            lines.append(f"📊 Bybit OI 解析失败: {e}")
+            lines.append(f"📊 Deribit OI 解析失败: {e}")
             lines.append("")
 
     # === OKX Funding ===

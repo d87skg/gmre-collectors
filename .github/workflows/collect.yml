@@ -40,7 +40,7 @@ jobs:
           python collectors/nyfed_rates.py || echo "NYFed failed"
           python collectors/fred_macro.py || echo "FRED failed"
           python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
-          python collectors/bybit_derivatives.py || echo "Bybit failed"
+          python collectors/deribit_perp.py || echo "Deribit perp failed"
 
       - name: List data
         run: ls -la data/
