@@ -138,6 +138,61 @@ def build_message():
             lines.append(f"🏛️ CME 解析失败: {e}")
             lines.append("")
 
+    # === Binance 资金费率 ===
+    p = Path('data/binance_funding.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p).sort_values('datetime')
+            latest_dt = df['datetime'].max()
+            df = df[df['datetime'] == latest_dt]
+            lines.append(f"💰 Binance Funding ({latest_dt} UTC)")
+            for _, r in df.iterrows():
+                sym = str(r['symbol']).replace('USDT', '')
+                rate = float(r['funding_rate']) * 100
+                lines.append(f"  {sym}: {rate:+.4f}%")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"💰 Funding 解析失败: {e}")
+            lines.append("")
+
+    # === Binance OI ===
+    p = Path('data/binance_oi.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p).sort_values('datetime')
+            latest_dt = df['datetime'].max()
+            df = df[df['datetime'] == latest_dt]
+            lines.append(f"📊 Binance OI ({latest_dt} UTC)")
+            for _, r in df.iterrows():
+                sym = str(r['symbol']).replace('USDT', '')
+                oi_val = float(r['oi_value']) / 1e9
+                lines.append(f"  {sym}: ${oi_val:.2f}B")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"📊 OI 解析失败: {e}")
+            lines.append("")
+
+    # === OKX 爆仓（最近 1 小时） ===
+    p = Path('data/okx_liquidation.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            df['dt'] = pd.to_datetime(df['datetime'], utc=True)
+            latest = df['dt'].max()
+            recent = df[df['dt'] >= latest - pd.Timedelta(hours=1)]
+            if not recent.empty:
+                lines.append(f"💥 OKX 爆仓（最近 1h）")
+                for uly in recent['uly'].unique():
+                    sub = recent[recent['uly'] == uly]
+                    longs = sub[sub['pos_side'] == 'long']['size'].sum()
+                    shorts = sub[sub['pos_side'] == 'short']['size'].sum()
+                    sym = uly.replace('-USDT', '')
+                    lines.append(f"  {sym}: 多 {longs:.0f} / 空 {shorts:.0f} 张")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"💥 爆仓解析失败: {e}")
+            lines.append("")
+
     # === Farside BTC ETF Flow ===
     p = Path('data/farside_btc_etf.csv')
     if p.exists():
