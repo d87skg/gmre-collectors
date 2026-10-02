@@ -43,15 +43,30 @@ def build_message():
                 lines.append(f"  {sid}: {net:+,}")
             lines.append("")
 
-            # === Farside ===
+    # === Deribit DVOL ===
+    p = Path('data/deribit_dvol.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            latest_date = df['date'].max()
+            df = df[df['date'] == latest_date]
+            lines.append(f"📉 Deribit DVOL ({latest_date})")
+            for _, r in df.iterrows():
+                ccy = r['currency']
+                close = float(r['close'])
+                lines.append(f"  {ccy}: {close:.2f}")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"📉 DVOL 解析失败: {e}")
+            lines.append("")
+
+    # === Farside ===
     p = Path('data/farside_btc_etf.csv')
     if p.exists():
         try:
             df = pd.read_csv(p)
-            # 只保留日期行（如 "01 Oct 2026"）
             mask = df.iloc[:, 0].astype(str).str.match(r'\d{2} \w{3} \d{4}')
             df = df[mask]
-            # 第 13 列是 Total，只保留有数字的行
             total_col = pd.to_numeric(df.iloc[:, 13], errors='coerce')
             df = df[total_col.notna() & (total_col != 0)]
             if not df.empty:
@@ -67,7 +82,6 @@ def build_message():
 
     lines.append("🔗 github.com/d87skg/gmre-collectors")
     return "\n".join(lines)
-
 
 def send(content):
     timestamp = str(int(time.time()))

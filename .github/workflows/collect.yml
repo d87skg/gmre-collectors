@@ -23,11 +23,12 @@ jobs:
       - name: Install deps
         run: pip install pandas requests lxml html5lib curl_cffi
 
-      - name: Run collectors
+           - name: Run collectors
         run: |
           mkdir -p data/
           python collectors/cftc_cot.py || echo "CFTC 失败"
           python collectors/farside_etf.py || echo "Farside 失败"
+          python collectors/deribit_dvol.py || echo "Deribit 失败"
 
       - name: List data
         run: ls -la data/
