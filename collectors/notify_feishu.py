@@ -32,15 +32,19 @@ def build_message():
     # === CFTC ===
     p = Path('data/cftc_cot.csv')
     if p.exists():
-        df = pd.read_csv(p)
-        if not df.empty:
-            latest = df['date'].max()
-            df = df[df['date'] == latest].sort_values('series_id')
-            lines.append(f"🏦 CFTC COT ({latest})")
-            for _, r in df.iterrows():
-                net = int(r['net_noncommercial'])
-                sid = str(r['series_id']).replace('COT_', '')
-                lines.append(f"  {sid}: {net:+,}")
+        try:
+            df = pd.read_csv(p)
+            if not df.empty:
+                latest = df['date'].max()
+                df = df[df['date'] == latest].sort_values('series_id')
+                lines.append(f"🏦 CFTC COT ({latest})")
+                for _, r in df.iterrows():
+                    net = int(r['net_noncommercial'])
+                    sid = str(r['series_id']).replace('COT_', '')
+                    lines.append(f"  {sid}: {net:+,}")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"🏦 CFTC 解析失败: {e}")
             lines.append("")
 
     # === Deribit DVOL ===
@@ -60,13 +64,53 @@ def build_message():
             lines.append(f"📉 DVOL 解析失败: {e}")
             lines.append("")
 
-    # === Farside ===
+    # === Blockchain.com On-chain ===
+    p = Path('data/blockchain_com.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            latest = df.sort_values('date').iloc[-1]
+            date = latest['date']
+            price = latest.get('market-price')
+            txs = latest.get('n-transactions')
+            addr = latest.get('n-unique-addresses')
+            lines.append(f"⛓️ BTC On-chain ({date})")
+            if pd.notna(price):
+                lines.append(f"  价格: ${float(price):,.0f}")
+            if pd.notna(txs):
+                lines.append(f"  日交易: {int(txs):,}")
+            if pd.notna(addr):
+                lines.append(f"  活跃地址: {int(addr):,}")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"⛓️ On-chain 解析失败: {e}")
+            lines.append("")
+
+    # === Fear & Greed ===
+    p = Path('data/fear_greed.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            latest = df.sort_values('date').iloc[-1]
+            date = latest['date']
+            value = int(latest['value'])
+            cls = latest['classification']
+            lines.append(f"😱 Fear & Greed ({date})")
+            lines.append(f"  {value} - {cls}")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"😱 FearGreed 解析失败: {e}")
+            lines.append("")
+
+    # === Farside BTC ETF Flow ===
     p = Path('data/farside_btc_etf.csv')
     if p.exists():
         try:
             df = pd.read_csv(p)
+            # 只保留日期行（如 "01 Oct 2026"）
             mask = df.iloc[:, 0].astype(str).str.match(r'\d{2} \w{3} \d{4}')
             df = df[mask]
+            # 第 13 列是 Total，只保留有数字且非 0 的行
             total_col = pd.to_numeric(df.iloc[:, 13], errors='coerce')
             df = df[total_col.notna() & (total_col != 0)]
             if not df.empty:
@@ -82,6 +126,7 @@ def build_message():
 
     lines.append("🔗 github.com/d87skg/gmre-collectors")
     return "\n".join(lines)
+
 
 def send(content):
     timestamp = str(int(time.time()))
