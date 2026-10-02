@@ -86,7 +86,7 @@ def build_message():
                 lines.append(f"  利差: {spread:+.1f}bp")
             if not rrp.empty:
                 r = float(rrp.iloc[0])
-                                lines.append(f"  RRP: ${r:.2f}B")
+                lines.append(f"  RRP: ${r:.2f}B")
             lines.append("")
         except Exception as e:
             lines.append(f"🏛️ NY Fed 解析失败: {e}")
@@ -105,12 +105,10 @@ def build_message():
                     return None, None
                 return float(sub.iloc[-1]['value']), sub.iloc[-1]['date']
 
-            # 准备金
             v, d = latest('WRESBAL')
             if v is not None:
                 lines.append(f"  准备金: ${v/1e6:.2f}T ({d})")
 
-            # 信用利差
             v, d = latest('BAMLH0A0HYM2')
             if v is not None:
                 lines.append(f"  HY OAS: {v*100:.0f}bp ({d})")
@@ -119,7 +117,6 @@ def build_message():
             if v is not None:
                 lines.append(f"  IG OAS: {v*100:.0f}bp")
 
-            # 收益率曲线
             t2, _ = latest('DGS2')
             t10, _ = latest('DGS10')
             t30, _ = latest('DGS30')
@@ -132,24 +129,20 @@ def build_message():
             if t2 is not None and t10 is not None:
                 lines.append(f"  2s10s: {(t10-t2)*100:+.0f}bp")
 
-            # 期限溢价
             v, _ = latest('THREEFYTP10')
             if v is not None:
                 lines.append(f"  10Y 期限溢价: {v:.2f}%")
 
-            # CP-Tbill 利差
             cp, _ = latest('CPF3M')
             tb, _ = latest('TB3MS')
             if cp is not None and tb is not None:
                 lines.append(f"  CP-Tbill: {(cp-tb)*100:+.0f}bp")
 
-            # CP60 (CD 代理) - Tbill
             cp60, _ = latest('RIFSPPNA2P2D60NB')
             if cp60 is not None and tb is not None:
                 lines.append(f"  CP60-Tbill: {(cp60-tb)*100:+.0f}bp")
 
-            # 商业地产拖欠率
-            v, d = latest('ORCRELEXFACBS')
+            v, d = latest('DRCRELEXFACBS')
             if v is not None:
                 lines.append(f"  商业地产拖欠率: {v:.2f}% ({d})")
 
