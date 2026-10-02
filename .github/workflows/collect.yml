@@ -29,8 +29,10 @@ jobs:
         run: |
           mkdir -p data/
           python collectors/cftc_cot.py || echo "CFTC failed"
+          python collectors/cftc_fx.py || echo "CFTC FX failed"
           python collectors/farside_etf.py || echo "Farside failed"
-          python collectors/deribit_dvol.py || echo "Deribit failed"
+          python collectors/deribit_dvol.py || echo "Deribit DVOL failed"
+          python collectors/deribit_perp.py || echo "Deribit perp failed"
           python collectors/blockchain_com.py || echo "Blockchain failed"
           python collectors/fear_greed.py || echo "FearGreed failed"
           python collectors/fetch_fedwatch.py || echo "CME failed"
@@ -40,7 +42,6 @@ jobs:
           python collectors/nyfed_rates.py || echo "NYFed failed"
           python collectors/fred_macro.py || echo "FRED failed"
           python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
-          python collectors/deribit_perp.py || echo "Deribit perp failed"
 
       - name: List data
         run: ls -la data/

@@ -3,10 +3,16 @@ FRED 宏观指标
 - WRESBAL: 准备金余额
 - CPF3M: 3个月商业票据利率
 - TB3MS: 3个月国债利率
-- ACMTP10: 10年期 ACM 期限溢价
+- THREEFYTP10: 10年期 ACM 期限溢价
+- BAMLH0A0HYM2: 高收益债 OAS（信用压力）
+- BAMLC0A0CM: 投资级 OAS
+- RIFSPPNA2P2D60NB: 60天 AA 非金融 CP 利率（CD 代理）
+- DGS2/DGS10/DGS30: 2Y/10Y/30Y 国债收益率
+- DRCRELEXFACBS: 商业地产贷款拖欠率（CMBS 代理）
 环境变量: FRED_API_KEY
 """
 import os
+import time
 import requests
 import pandas as pd
 import sys
@@ -17,10 +23,22 @@ OUT = Path('data/fred_macro.csv')
 BASE = 'https://api.stlouisfed.org/fred/series/observations'
 API_KEY = os.environ.get('FRED_API_KEY')
 
-SERIES = ['WRESBAL', 'CPF3M', 'TB3MS', 'THREEFYTP10']
+SERIES = [
+    'WRESBAL',
+    'CPF3M',
+    'TB3MS',
+    'THREEFYTP10',
+    'BAMLH0A0HYM2',
+    'BAMLC0A0CM',
+    'RIFSPPNA2P2D60NB',
+    'DGS2',
+    'DGS10',
+    'DGS30',
+    'DRCRELEXFACBS',
+]
 
 
-def fetch(series_id, days=180):
+def fetch(series_id, days=180, retries=3):
     start = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
     params = {
         'series_id': series_id,
@@ -28,21 +46,32 @@ def fetch(series_id, days=180):
         'file_type': 'json',
         'observation_start': start,
     }
-    r = requests.get(BASE, params=params, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    if 'observations' not in data:
-        raise RuntimeError(f'{series_id} 返回异常: {data}')
-    rows = []
-    for item in data['observations']:
-        if item['value'] == '.':
-            continue
-        rows.append({
-            'date': item['date'],
-            'series': series_id,
-            'value': float(item['value']),
-        })
-    return rows
+    last_err = None
+    for attempt in range(retries):
+        try:
+            r = requests.get(BASE, params=params, timeout=30)
+            if r.status_code == 500:
+                print(f'{series_id} 500 重试 {attempt+1}/{retries}')
+                time.sleep(3)
+                continue
+            r.raise_for_status()
+            data = r.json()
+            if 'observations' not in data:
+                raise RuntimeError(f'{series_id} 返回异常: {data}')
+            rows = []
+            for item in data['observations']:
+                if item['value'] == '.':
+                    continue
+                rows.append({
+                    'date': item['date'],
+                    'series': series_id,
+                    'value': float(item['value']),
+                })
+            return rows
+        except Exception as e:
+            last_err = e
+            time.sleep(3)
+    raise last_err
 
 
 def main():

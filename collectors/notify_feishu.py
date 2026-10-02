@@ -28,7 +28,7 @@ def gen_sign(timestamp, secret):
 def build_message():
     lines = ["📊 GMRE 数据更新", ""]
 
-    # === CFTC ===
+    # === CFTC 金融期货 COT ===
     p = Path('data/cftc_cot.csv')
     if p.exists():
         try:
@@ -46,16 +46,35 @@ def build_message():
             lines.append(f"🏦 CFTC 解析失败: {e}")
             lines.append("")
 
-    # === NY Fed SOFR / EFFR 利差 ===
+    # === CFTC FX COT ===
+    p = Path('data/cftc_fx.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            if not df.empty:
+                latest = df['date'].max()
+                df = df[df['date'] == latest].sort_values('series_id')
+                lines.append(f"💱 FX COT ({latest})")
+                for _, r in df.iterrows():
+                    net = int(r['net_noncommercial'])
+                    sid = str(r['series_id']).replace('COT_', '')
+                    lines.append(f"  {sid}: {net:+,}")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"💱 FX COT 解析失败: {e}")
+            lines.append("")
+
+    # === NY Fed SOFR / EFFR / RRP ===
     p = Path('data/nyfed_rates.csv')
     if p.exists():
         try:
             df = pd.read_csv(p)
             latest = df['date'].max()
             df = df[df['date'] == latest]
+            lines.append(f"🏛️ NY Fed ({latest})")
             sofr = df[df['series'] == 'SOFR']['value']
             effr = df[df['series'] == 'EFFR']['value']
-            lines.append(f"🏛️ NY Fed ({latest})")
+            rrp = df[df['series'] == 'RRP_BALANCE']['value']
             if not sofr.empty:
                 s = float(sofr.iloc[0])
                 lines.append(f"  SOFR: {s:.2f}%")
@@ -65,6 +84,9 @@ def build_message():
             if not sofr.empty and not effr.empty:
                 spread = (float(sofr.iloc[0]) - float(effr.iloc[0])) * 100
                 lines.append(f"  利差: {spread:+.1f}bp")
+            if not rrp.empty:
+                r = float(rrp.iloc[0])
+                                lines.append(f"  RRP: ${r:.2f}B")
             lines.append("")
         except Exception as e:
             lines.append(f"🏛️ NY Fed 解析失败: {e}")
@@ -76,27 +98,61 @@ def build_message():
         try:
             df = pd.read_csv(p)
             lines.append("💵 FRED 宏观")
-            for sid in ['WRESBAL', 'CPF3M', 'TB3MS', 'THREEFYTP10']:
+
+            def latest(sid):
                 sub = df[df['series'] == sid].sort_values('date')
                 if sub.empty:
-                    continue
-                v = float(sub.iloc[-1]['value'])
-                d = sub.iloc[-1]['date']
-                if sid == 'WRESBAL':
-                    lines.append(f"  准备金: ${v/1e6:.2f}T ({d})")
-                elif sid == 'CPF3M':
-                    lines.append(f"  CP 3M: {v:.2f}%")
-                elif sid == 'TB3MS':
-                    lines.append(f"  TB 3M: {v:.2f}%")
-                elif sid == 'THREEFYTP10':
-                    lines.append(f"  10Y 期限溢价: {v:.2f}%")
-            cp = df[df['series'] == 'CPF3M'].sort_values('date')
-            tb = df[df['series'] == 'TB3MS'].sort_values('date')
-            if not cp.empty and not tb.empty:
-                cp_v = float(cp.iloc[-1]['value'])
-                tb_v = float(tb.iloc[-1]['value'])
-                spread = (cp_v - tb_v) * 100
-                lines.append(f"  CP-Tbill: {spread:+.1f}bp")
+                    return None, None
+                return float(sub.iloc[-1]['value']), sub.iloc[-1]['date']
+
+            # 准备金
+            v, d = latest('WRESBAL')
+            if v is not None:
+                lines.append(f"  准备金: ${v/1e6:.2f}T ({d})")
+
+            # 信用利差
+            v, d = latest('BAMLH0A0HYM2')
+            if v is not None:
+                lines.append(f"  HY OAS: {v*100:.0f}bp ({d})")
+
+            v, d = latest('BAMLC0A0CM')
+            if v is not None:
+                lines.append(f"  IG OAS: {v*100:.0f}bp")
+
+            # 收益率曲线
+            t2, _ = latest('DGS2')
+            t10, _ = latest('DGS10')
+            t30, _ = latest('DGS30')
+            if t2 is not None:
+                lines.append(f"  2Y: {t2:.2f}%")
+            if t10 is not None:
+                lines.append(f"  10Y: {t10:.2f}%")
+            if t30 is not None:
+                lines.append(f"  30Y: {t30:.2f}%")
+            if t2 is not None and t10 is not None:
+                lines.append(f"  2s10s: {(t10-t2)*100:+.0f}bp")
+
+            # 期限溢价
+            v, _ = latest('THREEFYTP10')
+            if v is not None:
+                lines.append(f"  10Y 期限溢价: {v:.2f}%")
+
+            # CP-Tbill 利差
+            cp, _ = latest('CPF3M')
+            tb, _ = latest('TB3MS')
+            if cp is not None and tb is not None:
+                lines.append(f"  CP-Tbill: {(cp-tb)*100:+.0f}bp")
+
+            # CP60 (CD 代理) - Tbill
+            cp60, _ = latest('RIFSPPNA2P2D60NB')
+            if cp60 is not None and tb is not None:
+                lines.append(f"  CP60-Tbill: {(cp60-tb)*100:+.0f}bp")
+
+            # 商业地产拖欠率
+            v, d = latest('ORCRELEXFACBS')
+            if v is not None:
+                lines.append(f"  商业地产拖欠率: {v:.2f}% ({d})")
+
             lines.append("")
         except Exception as e:
             lines.append(f"💵 FRED 解析失败: {e}")

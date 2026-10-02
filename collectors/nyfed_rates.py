@@ -1,6 +1,6 @@
 """
-NY Fed 利率（SOFR + EFFR）
-API: https://markets.newyorkfed.org/api/rates
+NY Fed 利率 + RRP 余额
+API: https://markets.newyorkfed.org/api
 无需 key
 """
 import requests
@@ -10,16 +10,14 @@ from datetime import datetime
 from pathlib import Path
 
 OUT = Path('data/nyfed_rates.csv')
-BASE = 'https://markets.newyorkfed.org/api/rates'
 
 
 def fetch_sofr():
-    url = f'{BASE}/secured/sofr/last/100.json'
+    url = 'https://markets.newyorkfed.org/api/rates/secured/sofr/last/100.json'
     r = requests.get(url, timeout=30)
     r.raise_for_status()
-    data = r.json()
     rows = []
-    for item in data.get('refRates', []):
+    for item in r.json().get('refRates', []):
         rows.append({
             'date': item['effectiveDate'],
             'series': 'SOFR',
@@ -29,12 +27,11 @@ def fetch_sofr():
 
 
 def fetch_effr():
-    url = f'{BASE}/unsecured/effr/last/100.json'
+    url = 'https://markets.newyorkfed.org/api/rates/unsecured/effr/last/100.json'
     r = requests.get(url, timeout=30)
     r.raise_for_status()
-    data = r.json()
     rows = []
-    for item in data.get('refRates', []):
+    for item in r.json().get('refRates', []):
         rows.append({
             'date': item['effectiveDate'],
             'series': 'EFFR',
@@ -43,9 +40,31 @@ def fetch_effr():
     return rows
 
 
+def fetch_rrp():
+    """隔夜逆回购余额（十亿美元）"""
+    url = 'https://markets.newyorkfed.org/api/rp/reverserepo/all/results/last/100.json'
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    rows = []
+    for item in data.get('repo', {}).get('operations', []):
+        if item.get('operationType') != 'Reverse Repo':
+            continue
+        date = item.get('operationDate')
+        total = item.get('totalAmtAccepted')
+        if not date or total is None:
+            continue
+        rows.append({
+            'date': date,
+            'series': 'RRP_BALANCE',
+            'value': float(total) / 1e9,
+        })
+    return rows
+
+
 def main():
     all_rows = []
-    for name, fn in [('SOFR', fetch_sofr), ('EFFR', fetch_effr)]:
+    for name, fn in [('SOFR', fetch_sofr), ('EFFR', fetch_effr), ('RRP', fetch_rrp)]:
         try:
             rows = fn()
             print(f'{name}: {len(rows)} 条')
@@ -72,7 +91,7 @@ def main():
     df = df.sort_values(['date', 'series'])
     df.to_csv(OUT, index=False)
     print(f'已保存: {OUT} ({len(df)} 行)')
-    print(df.tail(4).to_string())
+    print(df.tail(6).to_string())
 
 
 if __name__ == '__main__':
