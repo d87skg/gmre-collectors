@@ -24,6 +24,8 @@ jobs:
         run: pip install pandas requests lxml html5lib curl_cffi cme-fedwatch
 
       - name: Run collectors
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: |
           mkdir -p data/
           python collectors/cftc_cot.py || echo "CFTC failed"
@@ -35,6 +37,10 @@ jobs:
           python collectors/okx_funding.py || echo "OKX funding failed"
           python collectors/okx_oi.py || echo "OKX OI failed"
           python collectors/okx_liquidation.py || echo "OKX liq failed"
+          python collectors/nyfed_rates.py || echo "NYFed failed"
+          python collectors/fred_macro.py || echo "FRED failed"
+          python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
+          python collectors/bybit_derivatives.py || echo "Bybit failed"
 
       - name: List data
         run: ls -la data/
