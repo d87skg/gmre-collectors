@@ -23,12 +23,12 @@ jobs:
       - name: Install deps
         run: pip install pandas requests lxml html5lib curl_cffi
 
-           - name: Run collectors
+      - name: Run collectors
         run: |
           mkdir -p data/
-          python collectors/cftc_cot.py || echo "CFTC 失败"
-          python collectors/farside_etf.py || echo "Farside 失败"
-          python collectors/deribit_dvol.py || echo "Deribit 失败"
+          python collectors/cftc_cot.py || echo "CFTC failed"
+          python collectors/farside_etf.py || echo "Farside failed"
+          python collectors/deribit_dvol.py || echo "Deribit failed"
 
       - name: List data
         run: ls -la data/
@@ -39,10 +39,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/ || true
           if git diff --staged --quiet; then
-            echo "无变化，跳过 commit"
+            echo "no change, skip commit"
           else
             git commit -m "data: $(date -u +%Y-%m-%d)"
-            git push || echo "push 失败"
+            git push || echo "push failed"
           fi
 
       - name: Notify Feishu
