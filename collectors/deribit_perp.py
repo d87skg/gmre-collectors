@@ -48,7 +48,7 @@ def fetch_funding(instrument, days=90):
 
 
 def fetch_oi(instrument):
-    """用 ticker 端点拿 open_interest"""
+    """用 ticker 端点拿 open_interest 和 underlying_price"""
     url = f'{BASE}/ticker'
     params = {'instrument_name': instrument}
     r = requests.get(url, params=params, timeout=30)
@@ -59,8 +59,10 @@ def fetch_oi(instrument):
 
     result = data['result']
     oi = float(result['open_interest'])
-    # Deribit 永续面值：BTC 每张 10 USD，ETH 每张 1 USD
-    usd_per_contract = 10.0 if 'BTC' in instrument else 1.0
+
+    # Deribit 永续合约每张面值 10 USD
+    # （BTC-PERPETUAL 和 ETH-PERPETUAL 都是 inverse 合约）
+    usd_per_contract = 10.0
     oi_usd = oi * usd_per_contract
 
     ts = result.get('timestamp', int(datetime.now(timezone.utc).timestamp() * 1000))
