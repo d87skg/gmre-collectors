@@ -31,7 +31,7 @@ jobs:
           python collectors/deribit_dvol.py || echo "Deribit failed"
           python collectors/blockchain_com.py || echo "Blockchain failed"
           python collectors/fear_greed.py || echo "FearGreed failed"
-          python collectors/cme_fedwatch.py || echo "CME failed"
+                    python collectors/fetch_fedwatch.py || echo "CME failed"
 
       - name: List data
         run: ls -la data/
