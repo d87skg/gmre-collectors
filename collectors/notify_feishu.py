@@ -243,8 +243,8 @@ def build_message():
                 if pd.notna(latest.get('n-unique-addresses')):
                     lines.append(f"  活跃地址: {int(latest['n-unique-addresses']):,}")
                 if pd.notna(latest.get('hash-rate')):
-                    hr = float(latest['hash-rate']) / 1e9
-                    lines.append(f"  算力: {hr:.2f} EH/s")
+                                        hr = float(latest['hash-rate']) / 1e6
+                    lines.append(f"  算力: {hr:.1f} EH/s")
                 lines.append("")
         except Exception as e:
             lines.append(f"⛓️ On-chain 解析失败: {e}")
