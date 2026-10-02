@@ -48,25 +48,30 @@ def fetch_funding(instrument, days=90):
 
 
 def fetch_oi(instrument):
-    url = f'{BASE}/get_open_interest'
+    """用 ticker 端点拿 open_interest"""
+    url = f'{BASE}/ticker'
     params = {'instrument_name': instrument}
     r = requests.get(url, params=params, timeout=30)
     r.raise_for_status()
     data = r.json()
     if 'result' not in data:
         raise RuntimeError(f'{instrument} 返回异常: {data}')
-    oi = float(data['result']['open_interest'])
+
+    result = data['result']
+    oi = float(result['open_interest'])
     # Deribit 永续面值：BTC 每张 10 USD，ETH 每张 1 USD
     usd_per_contract = 10.0 if 'BTC' in instrument else 1.0
     oi_usd = oi * usd_per_contract
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')
+
+    ts = result.get('timestamp', int(datetime.now(timezone.utc).timestamp() * 1000))
+    dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+
     return [{
-        'datetime': now,
+        'datetime': dt.strftime('%Y-%m-%d %H:%M'),
         'symbol': INSTRUMENTS[instrument],
         'oi': oi,
         'oi_usd': oi_usd,
     }]
-
 
 def append_csv(rows, out):
     if not rows:
