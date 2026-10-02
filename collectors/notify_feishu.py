@@ -109,6 +109,35 @@ def build_message():
             lines.append(f"😱 FearGreed 解析失败: {e}")
             lines.append("")
 
+    # === CME FedWatch ===
+    p = Path('data/cme_fedwatch.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            if not df.empty:
+                latest = df.iloc[-1]
+                date = latest['date']
+                effr = latest.get('effr')
+                target = latest.get('current_target')
+                lines.append(f"🏛️ CME FedWatch ({date})")
+                if pd.notna(target):
+                    lines.append(f"  目标区间: {target}")
+                if pd.notna(effr):
+                    lines.append(f"  EFFR: {float(effr):.2f}%")
+                # 如果有会议概率
+                if 'meeting' in df.columns and df['meeting'].notna().any():
+                    df_m = df[df['meeting'].notna()].tail(3)
+                    for _, r in df_m.iterrows():
+                        mtg = r['meeting']
+                        cut = r.get('prob_cut', r.get('cut', '-'))
+                        hold = r.get('prob_hold', r.get('hold', '-'))
+                        hike = r.get('prob_hike', r.get('hike', '-'))
+                        lines.append(f"  {mtg}: 降{cut} 持{hold} 加{hike}")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"🏛️ CME 解析失败: {e}")
+            lines.append("")
+
     # === Farside BTC ETF Flow ===
     p = Path('data/farside_btc_etf.csv')
     if p.exists():
