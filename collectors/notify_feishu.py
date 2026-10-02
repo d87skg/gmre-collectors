@@ -90,7 +90,6 @@ def build_message():
                     lines.append(f"  TB 3M: {v:.2f}%")
                 elif sid == 'THREEFYTP10':
                     lines.append(f"  10Y 期限溢价: {v:.2f}%")
-            # CP-Tbill 利差
             cp = df[df['series'] == 'CPF3M'].sort_values('date')
             tb = df[df['series'] == 'TB3MS'].sort_values('date')
             if not cp.empty and not tb.empty:
@@ -119,7 +118,7 @@ def build_message():
             lines.append(f"🪙 DefiLlama 解析失败: {e}")
             lines.append("")
 
-        # === Deribit Funding ===
+    # === Deribit Funding ===
     p = Path('data/deribit_funding.csv')
     if p.exists():
         try:
@@ -243,7 +242,7 @@ def build_message():
                 if pd.notna(latest.get('n-unique-addresses')):
                     lines.append(f"  活跃地址: {int(latest['n-unique-addresses']):,}")
                 if pd.notna(latest.get('hash-rate')):
-                                        hr = float(latest['hash-rate']) / 1e6
+                    hr = float(latest['hash-rate']) / 1e6
                     lines.append(f"  算力: {hr:.1f} EH/s")
                 lines.append("")
         except Exception as e:
