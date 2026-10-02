@@ -26,7 +26,6 @@ jobs:
       - name: Run collectors
         run: |
           mkdir -p data/
-          python collectors/test_binance.py || echo "test failed"
           python collectors/cftc_cot.py || echo "CFTC failed"
           python collectors/farside_etf.py || echo "Farside failed"
           python collectors/deribit_dvol.py || echo "Deribit failed"
