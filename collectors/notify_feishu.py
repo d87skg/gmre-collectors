@@ -124,15 +124,6 @@ def build_message():
                     lines.append(f"  目标区间: {target}")
                 if pd.notna(effr):
                     lines.append(f"  EFFR: {float(effr):.2f}%")
-                # 如果有会议概率
-                if 'meeting' in df.columns and df['meeting'].notna().any():
-                    df_m = df[df['meeting'].notna()].tail(3)
-                    for _, r in df_m.iterrows():
-                        mtg = r['meeting']
-                        cut = r.get('prob_cut', r.get('cut', '-'))
-                        hold = r.get('prob_hold', r.get('hold', '-'))
-                        hike = r.get('prob_hike', r.get('hike', '-'))
-                        lines.append(f"  {mtg}: 降{cut} 持{hold} 加{hike}")
                 lines.append("")
         except Exception as e:
             lines.append(f"🏛️ CME 解析失败: {e}")
@@ -172,16 +163,16 @@ def build_message():
             lines.append(f"📊 OI 解析失败: {e}")
             lines.append("")
 
-    # === OKX 爆仓（最近 1 小时） ===
+    # === OKX 爆仓（最近 24h） ===
     p = Path('data/okx_liquidation.csv')
     if p.exists():
         try:
             df = pd.read_csv(p)
             df['dt'] = pd.to_datetime(df['datetime'], utc=True)
             latest = df['dt'].max()
-            recent = df[df['dt'] >= latest - pd.Timedelta(hours=1)]
+            recent = df[df['dt'] >= latest - pd.Timedelta(hours=24)]
             if not recent.empty:
-                lines.append(f"💥 OKX 爆仓（最近 1h）")
+                lines.append(f"💥 OKX 爆仓（最近 24h）")
                 for uly in recent['uly'].unique():
                     sub = recent[recent['uly'] == uly]
                     longs = sub[sub['pos_side'] == 'long']['size'].sum()

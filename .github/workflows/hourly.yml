@@ -1,0 +1,44 @@
+name: Hourly Exchange Data
+
+on:
+  schedule:
+    # 每小时整点运行（UTC）
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install pandas requests
+
+      - name: Run exchange collectors
+        run: |
+          mkdir -p data/
+          python collectors/binance_funding.py || echo "Binance funding failed"
+          python collectors/binance_oi.py || echo "Binance OI failed"
+          python collectors/okx_liquidation.py || echo "OKX liq failed"
+
+      - name: Commit data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ || true
+          if git diff --staged --quiet; then
+            echo "no change, skip commit"
+          else
+            git commit -m "hourly: $(date -u +%Y-%m-%dT%H:%M)"
+            git push || echo "push failed"
+          fi
