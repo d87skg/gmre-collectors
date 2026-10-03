@@ -34,8 +34,8 @@ TARGETS = {
     'FED FUNDS':    'COT_FEDFUNDS',
     'SOFR-3M':      'COT_SOFR3M',
     'EURO FX':      'COT_EUR',
+    'BITCOIN':      'COT_BTC_CME',
 }
-
 
 def fetch():
     r = requests.get(URL, headers=HEADERS, timeout=30)

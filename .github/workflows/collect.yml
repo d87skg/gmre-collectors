@@ -41,6 +41,7 @@ jobs:
           python collectors/okx_liquidation.py || echo "OKX liq failed"
           python collectors/nyfed_rates.py || echo "NYFed failed"
           python collectors/fred_macro.py || echo "FRED failed"
+          python collectors/treasury_tga.py || echo "TGA failed"
           python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
 
       - name: List data
