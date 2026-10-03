@@ -81,33 +81,7 @@ def build_message():
             lines.append(f"💱 FX COT 解析失败: {e}")
             lines.append("")
 
-    # === NY Fed SOFR / EFFR / ON RRP ===
-    p = Path('data/nyfed_rates.csv')
-    if p.exists():
-        try:
-            df = pd.read_csv(p)
-            latest = df['date'].max()
-            df = df[df['date'] == latest]
-            lines.append(f"🏛️ NY Fed ({latest})")
-            sofr = df[df['series'] == 'SOFR']['value']
-            effr = df[df['series'] == 'EFFR']['value']
-            rrp = df[df['series'] == 'RRP_BALANCE']['value']
-            if not sofr.empty:
-                s = float(sofr.iloc[0])
-                lines.append(f"  SOFR: {s:.2f}%")
-            if not effr.empty:
-                e = float(effr.iloc[0])
-                lines.append(f"  EFFR: {e:.2f}%")
-            if not sofr.empty and not effr.empty:
-                spread = (float(sofr.iloc[0]) - float(effr.iloc[0])) * 100
-                lines.append(f"  利差: {spread:+.1f}bp")
-            if not rrp.empty:
-                r = float(rrp.iloc[0])
-                lines.append(f"  ON RRP: ${r:.2f}B")
-            lines.append("")
-        except Exception as e:
-            lines.append(f"🏛️ NY Fed 解析失败: {e}")
-            lines.append("")
+    
 
     # === FRED 宏观 ===
     p = Path('data/fred_macro.csv')
