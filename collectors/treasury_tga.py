@@ -31,13 +31,13 @@ def fetch(days=90):
         if bal is None:
             continue
         try:
-            value = float(bal) / 1e6  # 百万 → 万亿（billions）
+            value = float(bal) / 1e6  # 百万 → 十亿
         except (ValueError, TypeError):
             continue
         rows.append({
             'date': item['record_date'],
             'series': 'TGA',
-            'value': value,  # 单位：$B
+            'value': value,
         })
     return rows
 
