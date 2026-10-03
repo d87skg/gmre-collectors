@@ -2,14 +2,10 @@
 飞书机器人通知（带签名校验）
 环境变量: FEISHU_WEBHOOK, FEISHU_SECRET
 
-显示层约定（v2，2026-10-03）：
-- 资金费率：8h 原值 + 年化
-- OKX 爆仓：张数 + USD 估算
-- FX COT：排除 EUR（CFTC 段已含，避免双计）
-- ETF Flow：标注单位 US$m
-- OI：标注口径（perp only）
-- 商业地产：标注季度滞后
-- RRP：标注 ON RRP
+显示层约定（v3，2026-10-03）：
+- 流动性段：SOFR / EFFR / 利差 / ON RRP / TGA
+- CFTC COT：自动包含 COT_BTC_CME
+- 其他同 v2
 """
 import os
 import sys
@@ -37,7 +33,7 @@ def gen_sign(timestamp, secret):
 def build_message():
     lines = ["📊 GMRE 数据更新", ""]
 
-    # === CFTC 金融期货 COT ===
+    # === CFTC 金融期货 COT（含 CME BTC） ===
     p = Path('data/cftc_cot.csv')
     if p.exists():
         try:
@@ -60,7 +56,7 @@ def build_message():
             lines.append(f"🏦 CFTC 解析失败: {e}")
             lines.append("")
 
-    # === CFTC FX COT（排除 EUR，避免与 CFTC 段双计） ===
+    # === CFTC FX COT（排除 EUR） ===
     p = Path('data/cftc_fx.csv')
     if p.exists():
         try:
@@ -81,7 +77,48 @@ def build_message():
             lines.append(f"💱 FX COT 解析失败: {e}")
             lines.append("")
 
-    
+    # === 流动性（NY Fed + Treasury TGA） ===
+    p_nyfed = Path('data/nyfed_rates.csv')
+    p_tga = Path('data/treasury_tga.csv')
+    if p_nyfed.exists() or p_tga.exists():
+        try:
+            lines.append("💵 流动性")
+
+            # NY Fed 部分
+            if p_nyfed.exists():
+                df = pd.read_csv(p_nyfed)
+
+                def latest_by_series(sid):
+                    sub = df[df['series'] == sid].sort_values('date')
+                    if sub.empty:
+                        return None, None
+                    return float(sub.iloc[-1]['value']), sub.iloc[-1]['date']
+
+                s, d_s = latest_by_series('SOFR')
+                e, d_e = latest_by_series('EFFR')
+                r, d_r = latest_by_series('RRP_BALANCE')
+
+                if s is not None:
+                    lines.append(f"  SOFR: {s:.2f}% ({d_s})")
+                if e is not None:
+                    lines.append(f"  EFFR: {e:.2f}% ({d_e})")
+                if s is not None and e is not None:
+                    lines.append(f"  利差: {(s-e)*100:+.1f}bp")
+                if r is not None:
+                    lines.append(f"  ON RRP: ${r:.2f}B ({d_r})")
+
+            # TGA 部分
+            if p_tga.exists():
+                df_tga = pd.read_csv(p_tga).sort_values('date')
+                if not df_tga.empty:
+                    tga_val = float(df_tga.iloc[-1]['value'])
+                    tga_date = df_tga.iloc[-1]['date']
+                    lines.append(f"  TGA: ${tga_val:.1f}B ({tga_date})")
+
+            lines.append("")
+        except Exception as ex:
+            lines.append(f"💵 流动性 解析失败: {ex}")
+            lines.append("")
 
     # === FRED 宏观 ===
     p = Path('data/fred_macro.csv')
@@ -158,7 +195,7 @@ def build_message():
             lines.append(f"🪙 DefiLlama 解析失败: {e}")
             lines.append("")
 
-    # === Deribit Funding（8h + 年化） ===
+    # === Deribit Funding ===
     p = Path('data/deribit_funding.csv')
     if p.exists():
         try:
@@ -176,7 +213,7 @@ def build_message():
             lines.append(f"💰 Deribit Funding 解析失败: {e}")
             lines.append("")
 
-    # === Deribit OI（perp only） ===
+    # === Deribit OI ===
     p = Path('data/deribit_oi.csv')
     if p.exists():
         try:
@@ -193,7 +230,7 @@ def build_message():
             lines.append(f"📊 Deribit OI 解析失败: {e}")
             lines.append("")
 
-    # === OKX Funding（8h + 年化） ===
+    # === OKX Funding ===
     p = Path('data/okx_funding.csv')
     if p.exists():
         try:
@@ -211,7 +248,7 @@ def build_message():
             lines.append(f"💰 OKX Funding 解析失败: {e}")
             lines.append("")
 
-    # === OKX OI（perp only） ===
+    # === OKX OI ===
     p = Path('data/okx_oi.csv')
     if p.exists():
         try:
@@ -228,7 +265,7 @@ def build_message():
             lines.append(f"📊 OKX OI 解析失败: {e}")
             lines.append("")
 
-    # === OKX 爆仓（24h，张数 + USD 估算） ===
+    # === OKX 爆仓 ===
     p = Path('data/okx_liquidation.csv')
     if p.exists():
         try:
@@ -240,7 +277,6 @@ def build_message():
                 lines.append(f"💥 OKX 爆仓（最近 24h）")
                 for uly in recent['uly'].unique():
                     sub = recent[recent['uly'] == uly].copy()
-                    # OKX USDT 永续面值：BTC 0.01 BTC/张，ETH 0.1 ETH/张
                     contract_size = 0.01 if 'BTC' in uly else 0.1
                     sub['usd'] = sub['size'] * contract_size * sub['price']
                     longs_size = sub[sub['pos_side'] == 'long']['size'].sum()
