@@ -179,17 +179,35 @@ def build_message():
             lines.append(f"💵 FRED 解析失败: {e}")
             lines.append("")
 
-    # === DefiLlama 稳定币 ===
+        # === DefiLlama 稳定币 ===
     p = Path('data/defillama_stablecoin.csv')
     if p.exists():
         try:
-            df = pd.read_csv(p).sort_values('date')
-            if len(df) >= 2:
+            df = pd.read_csv(p).sort_values('date').reset_index(drop=True)
+            if len(df) >= 1:
                 cur = float(df.iloc[-1]['total_usd']) / 1e9
-                prev = float(df.iloc[-2]['total_usd']) / 1e9
-                change = (cur - prev) / prev * 100
-                lines.append(f"🪙 稳定币总市值 ({df.iloc[-1]['date']})")
-                lines.append(f"  ${cur:.1f}B ({change:+.2f}% 日变, peggedUSD)")
+                cur_date = df.iloc[-1]['date']
+                lines.append(f"🪙 稳定币总市值 ({cur_date})")
+                lines.append(f"  ${cur:.1f}B")
+
+                # 1d 变化
+                if len(df) >= 2:
+                    prev1 = float(df.iloc[-2]['total_usd']) / 1e9
+                    d1 = (cur - prev1)
+                    lines.append(f"  1d: {d1:+.2f}B")
+
+                # 7d 变化
+                if len(df) >= 8:
+                    prev7 = float(df.iloc[-8]['total_usd']) / 1e9
+                    d7 = (cur - prev7)
+                    lines.append(f"  7d: {d7:+.2f}B")
+
+                # 30d 变化
+                if len(df) >= 31:
+                    prev30 = float(df.iloc[-31]['total_usd']) / 1e9
+                    d30 = (cur - prev30)
+                    lines.append(f"  30d: {d30:+.2f}B")
+
                 lines.append("")
         except Exception as e:
             lines.append(f"🪙 DefiLlama 解析失败: {e}")
