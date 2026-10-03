@@ -2,6 +2,7 @@
 Treasury General Account (TGA) 余额
 API: https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/dts/operating_cash_balance
 无需 key
+字段：open_today_bal（单位：百万美元）
 """
 import requests
 import pandas as pd
@@ -27,17 +28,18 @@ def fetch(days=90):
         raise RuntimeError(f'API 返回异常: {data}')
     rows = []
     for item in data['data']:
-        bal = item.get('close_today_bal')
-        if bal is None:
+        bal = item.get('open_today_bal')
+        if bal is None or bal == 'null':
             continue
         try:
-            value = float(bal) / 1e6  # 百万 → 十亿
+            # open_today_bal 单位：百万美元；转成十亿
+            value = float(bal) / 1000
         except (ValueError, TypeError):
             continue
         rows.append({
             'date': item['record_date'],
             'series': 'TGA',
-            'value': value,
+            'value': value,  # $B
         })
     return rows
 
