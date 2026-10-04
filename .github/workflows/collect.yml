@@ -43,9 +43,6 @@ jobs:
           python collectors/fred_macro.py || echo "FRED failed"
           python collectors/treasury_tga.py || echo "TGA failed"
           python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
-          echo "===== ALTERNATIVES TEST ====="
-          python collectors/test_alternatives.py || echo "test failed"
-          echo "===== END TEST ====="
 
       - name: List data
         run: ls -la data/
