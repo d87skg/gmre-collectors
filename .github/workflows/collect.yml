@@ -43,6 +43,9 @@ jobs:
           python collectors/fred_macro.py || echo "FRED failed"
           python collectors/treasury_tga.py || echo "TGA failed"
           python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
+          python collectors/yahoo_market.py || echo "Yahoo failed"
+          python collectors/ecb_rates.py || echo "ECB failed"
+          python collectors/bis_cbpol.py || echo "BIS failed"
 
       - name: List data
         run: ls -la data/

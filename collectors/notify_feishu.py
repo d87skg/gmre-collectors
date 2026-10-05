@@ -2,10 +2,10 @@
 飞书机器人通知（带签名校验）
 环境变量: FEISHU_WEBHOOK, FEISHU_SECRET
 
-显示层约定（v3，2026-10-03）：
+显示层约定（v4，2026-10-05）：
 - 流动性段：SOFR / EFFR / 利差 / ON RRP / TGA
 - CFTC COT：自动包含 COT_BTC_CME
-- 其他同 v2
+- 新增：全球央行利率（BIS）+ ECB + Yahoo 市场指标
 """
 import os
 import sys
@@ -77,6 +77,64 @@ def build_message():
             lines.append(f"💱 FX COT 解析失败: {e}")
             lines.append("")
 
+    # === 全球央行政策利率（BIS） ===
+    p = Path('data/bis_cbpol.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            if not df.empty:
+                latest = df['date'].max()
+                df = df[df['date'] == latest].sort_values('series')
+                lines.append(f"🏛️ 全球央行利率 ({latest}, BIS)")
+                for _, r in df.iterrows():
+                    name = str(r['series']).replace('CB_', '')
+                    v = float(r['value'])
+                    lines.append(f"  {name}: {v:.2f}%")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"🏛️ BIS 解析失败: {e}")
+            lines.append("")
+
+    # === ECB 利率 ===
+    p = Path('data/ecb_rates.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            latest = df['date'].max()
+            df = df[df['date'] == latest]
+            lines.append(f"🇪🇺 ECB 利率 ({latest})")
+            for sid in ['ECB_MRR', 'ECB_DFR']:
+                sub = df[df['series'] == sid]
+                if sub.empty:
+                    continue
+                v = float(sub.iloc[0]['value'])
+                label = sid.replace('ECB_', '')
+                lines.append(f"  {label}: {v:.2f}%")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"🇪🇺 ECB 解析失败: {e}")
+            lines.append("")
+
+    # === Yahoo 市场指标（VIX / DXY / GOLD / OIL） ===
+    p = Path('data/yahoo_market.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            latest_date = df['date'].max()
+            df = df[df['date'] == latest_date].sort_values('symbol')
+            lines.append(f"📈 市场指标 ({latest_date})")
+            for _, r in df.iterrows():
+                sym = str(r['symbol'])
+                v = float(r['value'])
+                if sym in ('GOLD', 'OIL'):
+                    lines.append(f"  {sym}: ${v:,.2f}")
+                else:
+                    lines.append(f"  {sym}: {v:.2f}")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"📈 Yahoo 解析失败: {e}")
+            lines.append("")
+
     # === 流动性（NY Fed + Treasury TGA） ===
     p_nyfed = Path('data/nyfed_rates.csv')
     p_tga = Path('data/treasury_tga.csv')
@@ -84,7 +142,6 @@ def build_message():
         try:
             lines.append("💵 流动性")
 
-            # NY Fed 部分
             if p_nyfed.exists():
                 df = pd.read_csv(p_nyfed)
 
@@ -107,7 +164,6 @@ def build_message():
                 if r is not None:
                     lines.append(f"  ON RRP: ${r:.2f}B ({d_r})")
 
-            # TGA 部分
             if p_tga.exists():
                 df_tga = pd.read_csv(p_tga).sort_values('date')
                 if not df_tga.empty:
@@ -179,7 +235,7 @@ def build_message():
             lines.append(f"💵 FRED 解析失败: {e}")
             lines.append("")
 
-        # === DefiLlama 稳定币 ===
+    # === DefiLlama 稳定币 ===
     p = Path('data/defillama_stablecoin.csv')
     if p.exists():
         try:
@@ -190,19 +246,16 @@ def build_message():
                 lines.append(f"🪙 稳定币总市值 ({cur_date})")
                 lines.append(f"  ${cur:.1f}B")
 
-                # 1d 变化
                 if len(df) >= 2:
                     prev1 = float(df.iloc[-2]['total_usd']) / 1e9
                     d1 = (cur - prev1)
                     lines.append(f"  1d: {d1:+.2f}B")
 
-                # 7d 变化
                 if len(df) >= 8:
                     prev7 = float(df.iloc[-8]['total_usd']) / 1e9
                     d7 = (cur - prev7)
                     lines.append(f"  7d: {d7:+.2f}B")
 
-                # 30d 变化
                 if len(df) >= 31:
                     prev30 = float(df.iloc[-31]['total_usd']) / 1e9
                     d30 = (cur - prev30)
