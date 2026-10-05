@@ -2,11 +2,10 @@
 飞书机器人通知（带签名校验）
 环境变量: FEISHU_WEBHOOK, FEISHU_SECRET
 
-显示层约定（v5，2026-10-05）：
-- 流动性段：SOFR / EFFR / 利差 / ON RRP / TGA
-- CFTC COT：自动包含 COT_BTC_CME
-- 新增：全球央行利率（BIS，月度）+ ECB + Yahoo 市场指标
-- 末尾：数据生成时间戳（UTC + 韩国）
+显示层约定（v6，2026-10-05）：
+- 新增：Eurostat HICP + BOJ 隔夜拆借
+- BIS 段标注"月度"
+- cron 改为 UTC 20:00（韩国次日 05:00）
 """
 import os
 import sys
@@ -97,6 +96,22 @@ def build_message():
             lines.append(f"🏛️ BIS 解析失败: {e}")
             lines.append("")
 
+    # === Eurostat HICP（欧元区 CPI） ===
+    p = Path('data/eurostat_hicp.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p).sort_values('date')
+            if not df.empty:
+                latest = df.iloc[-1]
+                date = latest['date']
+                v = float(latest['value'])
+                lines.append(f"🇪🇺 欧元区 HICP ({date}, Eurostat)")
+                lines.append(f"  CPI 年率: {v:.1f}%")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"🇪🇺 Eurostat 解析失败: {e}")
+            lines.append("")
+
     # === ECB 利率 ===
     p = Path('data/ecb_rates.csv')
     if p.exists():
@@ -115,6 +130,22 @@ def build_message():
             lines.append("")
         except Exception as e:
             lines.append(f"🇪🇺 ECB 解析失败: {e}")
+            lines.append("")
+
+    # === BOJ 日本央行利率 ===
+    p = Path('data/boj_rates.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p).sort_values('date')
+            if not df.empty:
+                latest = df.iloc[-1]
+                date = latest['date']
+                v = float(latest['value'])
+                lines.append(f"🇯🇵 BOJ 隔夜拆借 ({date})")
+                lines.append(f"  {v:.3f}%")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"🇯🇵 BOJ 解析失败: {e}")
             lines.append("")
 
     # === Yahoo 市场指标（VIX / DXY / GOLD / OIL） ===
