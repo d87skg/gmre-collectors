@@ -2,10 +2,11 @@
 飞书机器人通知（带签名校验）
 环境变量: FEISHU_WEBHOOK, FEISHU_SECRET
 
-显示层约定（v4，2026-10-05）：
+显示层约定（v5，2026-10-05）：
 - 流动性段：SOFR / EFFR / 利差 / ON RRP / TGA
 - CFTC COT：自动包含 COT_BTC_CME
-- 新增：全球央行利率（BIS）+ ECB + Yahoo 市场指标
+- 新增：全球央行利率（BIS，月度）+ ECB + Yahoo 市场指标
+- 末尾：数据生成时间戳（UTC + 韩国）
 """
 import os
 import sys
@@ -78,7 +79,7 @@ def build_message():
             lines.append(f"💱 FX COT 解析失败: {e}")
             lines.append("")
 
-    # === 全球央行政策利率（BIS） ===
+    # === 全球央行政策利率（BIS，月度） ===
     p = Path('data/bis_cbpol.csv')
     if p.exists():
         try:
@@ -249,18 +250,15 @@ def build_message():
 
                 if len(df) >= 2:
                     prev1 = float(df.iloc[-2]['total_usd']) / 1e9
-                    d1 = (cur - prev1)
-                    lines.append(f"  1d: {d1:+.2f}B")
+                    lines.append(f"  1d: {(cur - prev1):+.2f}B")
 
                 if len(df) >= 8:
                     prev7 = float(df.iloc[-8]['total_usd']) / 1e9
-                    d7 = (cur - prev7)
-                    lines.append(f"  7d: {d7:+.2f}B")
+                    lines.append(f"  7d: {(cur - prev7):+.2f}B")
 
                 if len(df) >= 31:
                     prev30 = float(df.iloc[-31]['total_usd']) / 1e9
-                    d30 = (cur - prev30)
-                    lines.append(f"  30d: {d30:+.2f}B")
+                    lines.append(f"  30d: {(cur - prev30):+.2f}B")
 
                 lines.append("")
         except Exception as e:
@@ -463,11 +461,8 @@ def build_message():
             lines.append(f"📈 Farside 解析失败: {e}")
             lines.append("")
 
-        now_utc = datetime.now(timezone.utc)
-    now_local = now_utc.astimezone(timezone(timedelta(hours=8)))
-    lines.append(f"⏱️ 数据生成: {now_utc.strftime('%Y-%m-%d %H:%M')} UTC / {now_local.strftime('%H:%M')} 北京")
-    lines.append("")
-        now_utc = datetime.now(timezone.utc)
+    # === 数据生成时间戳 ===
+    now_utc = datetime.now(timezone.utc)
     now_kr = now_utc.astimezone(timezone(timedelta(hours=9)))
     lines.append(f"⏱️ 数据生成: {now_utc.strftime('%Y-%m-%d %H:%M')} UTC / {now_kr.strftime('%H:%M')} 韩国")
     lines.append("")
