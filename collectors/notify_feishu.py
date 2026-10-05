@@ -16,6 +16,7 @@ import hashlib
 import requests
 import pandas as pd
 from pathlib import Path
+from datetime import datetime, timezone, timedelta
 
 WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
 SECRET = os.environ.get('FEISHU_SECRET')
@@ -85,7 +86,7 @@ def build_message():
             if not df.empty:
                 latest = df['date'].max()
                 df = df[df['date'] == latest].sort_values('series')
-                lines.append(f"🏛️ 全球央行利率 ({latest}, BIS)")
+                lines.append(f"🏛️ 全球央行利率 ({latest}, BIS, 月度)")
                 for _, r in df.iterrows():
                     name = str(r['series']).replace('CB_', '')
                     v = float(r['value'])
@@ -462,6 +463,14 @@ def build_message():
             lines.append(f"📈 Farside 解析失败: {e}")
             lines.append("")
 
+        now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(timezone(timedelta(hours=8)))
+    lines.append(f"⏱️ 数据生成: {now_utc.strftime('%Y-%m-%d %H:%M')} UTC / {now_local.strftime('%H:%M')} 北京")
+    lines.append("")
+        now_utc = datetime.now(timezone.utc)
+    now_kr = now_utc.astimezone(timezone(timedelta(hours=9)))
+    lines.append(f"⏱️ 数据生成: {now_utc.strftime('%Y-%m-%d %H:%M')} UTC / {now_kr.strftime('%H:%M')} 韩国")
+    lines.append("")
     lines.append("🔗 github.com/d87skg/gmre-collectors")
     return "\n".join(lines)
 
