@@ -34,7 +34,8 @@ jobs:
           python collectors/ecb_rates.py || echo "ECB failed"
           python collectors/eurostat_hicp.py || echo "Eurostat failed"
           python collectors/boj_rates.py || echo "BOJ failed"
-          python collectors/farside_etf.py || echo "Farside failed"
+          python collectors/farside_etf.py || echo "Farside BTC failed"
+          python collectors/farside_eth_etf.py || echo "Farside ETH failed"
           python collectors/deribit_dvol.py || echo "Deribit DVOL failed"
           python collectors/deribit_perp.py || echo "Deribit perp failed"
           python collectors/blockchain_com.py || echo "Blockchain failed"
@@ -48,6 +49,10 @@ jobs:
           python collectors/treasury_tga.py || echo "TGA failed"
           python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
           python collectors/yahoo_market.py || echo "Yahoo failed"
+          python collectors/coingecko_global.py || echo "CG global failed"
+          python collectors/coingecko_stablecoins.py || echo "CG stables failed"
+          python collectors/coingecko_exchange_vol.py || echo "CG exvol failed"
+          python collectors/coingecko_derivatives.py || echo "CG deriv failed"
 
       - name: List data
         run: ls -la data/

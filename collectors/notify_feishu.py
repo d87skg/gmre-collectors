@@ -1,10 +1,7 @@
 """
-飞书机器人通知（v7，2026-10-08）
-新增：
-- FRED 段：10Y-3M / 10Y TIPS / 5Y+10Y Breakeven / BB/B/CCC / AAA/BBB / SLOOS
-- 稳定币段：USDT / USDC 分开
-- 新增 ETH ETF Flow
-- 市场指标：VIX/DXY/GOLD/OIL/NDX/TLT
+飞书机器人通知（v9，2026-10-08）
+- 删掉 Coinalyze（单位混乱 + 需 key）
+- 保留 CoinGecko 全市场 / 稳定币细分 / 交易所量 / 多交易所衍生品
 """
 import os
 import sys
@@ -33,7 +30,7 @@ def gen_sign(timestamp, secret):
 def build_message():
     lines = ["📊 GMRE 数据更新", ""]
 
-    # === CFTC 金融期货 COT ===
+    # === CFTC COT ===
     p = Path('data/cftc_cot.csv')
     if p.exists():
         try:
@@ -56,7 +53,7 @@ def build_message():
             lines.append(f"🏦 CFTC 解析失败: {e}")
             lines.append("")
 
-    # === CFTC FX COT ===
+    # === FX COT ===
     p = Path('data/cftc_fx.csv')
     if p.exists():
         try:
@@ -64,8 +61,7 @@ def build_message():
             if not df.empty:
                 latest = df['date'].max()
                 df = df[df['date'] == latest]
-                df = df[df['series_id'] != 'COT_EUR']
-                df = df.sort_values('series_id')
+                df = df[df['series_id'] != 'COT_EUR'].sort_values('series_id')
                 if not df.empty:
                     lines.append(f"💱 FX COT ({latest}) [EUR 见上]")
                     for _, r in df.iterrows():
@@ -102,16 +98,14 @@ def build_message():
             df = pd.read_csv(p).sort_values('date')
             if not df.empty:
                 latest = df.iloc[-1]
-                date = latest['date']
-                v = float(latest['value'])
-                lines.append(f"🇪🇺 欧元区 HICP ({date}, Eurostat)")
-                lines.append(f"  CPI 年率: {v:.1f}%")
+                lines.append(f"🇪🇺 欧元区 HICP ({latest['date']}, Eurostat)")
+                lines.append(f"  CPI 年率: {float(latest['value']):.1f}%")
                 lines.append("")
         except Exception as e:
             lines.append(f"🇪🇺 Eurostat 解析失败: {e}")
             lines.append("")
 
-    # === ECB 利率 ===
+    # === ECB ===
     p = Path('data/ecb_rates.csv')
     if p.exists():
         try:
@@ -121,11 +115,10 @@ def build_message():
             lines.append(f"🇪🇺 ECB 利率 ({latest})")
             for sid in ['ECB_MRR', 'ECB_DFR']:
                 sub = df[df['series'] == sid]
-                if sub.empty:
-                    continue
-                v = float(sub.iloc[0]['value'])
-                label = sid.replace('ECB_', '')
-                lines.append(f"  {label}: {v:.2f}%")
+                if not sub.empty:
+                    v = float(sub.iloc[0]['value'])
+                    label = sid.replace('ECB_', '')
+                    lines.append(f"  {label}: {v:.2f}%")
             lines.append("")
         except Exception as e:
             lines.append(f"🇪🇺 ECB 解析失败: {e}")
@@ -138,13 +131,87 @@ def build_message():
             df = pd.read_csv(p).sort_values('date')
             if not df.empty:
                 latest = df.iloc[-1]
-                date = latest['date']
-                v = float(latest['value'])
-                lines.append(f"🇯🇵 BOJ 隔夜拆借 ({date})")
-                lines.append(f"  {v:.3f}%")
+                lines.append(f"🇯🇵 BOJ 隔夜拆借 ({latest['date']})")
+                lines.append(f"  {float(latest['value']):.3f}%")
                 lines.append("")
         except Exception as e:
             lines.append(f"🇯🇵 BOJ 解析失败: {e}")
+            lines.append("")
+
+    # === CoinGecko 全市场 ===
+    p = Path('data/coingecko_global.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p).sort_values('date')
+            latest = df['date'].max()
+            df = df[df['date'] == latest]
+            lines.append(f"🌐 全市场 ({latest}, CoinGecko)")
+            for _, r in df.iterrows():
+                sid = str(r['series'])
+                v = float(r['value'])
+                if 'USD' in sid:
+                    lines.append(f"  {sid.replace('_USD', '')}: ${v/1e12:.2f}T")
+                elif 'DOMINANCE' in sid:
+                    lines.append(f"  {sid.replace('_DOMINANCE', '')} 市占率: {v:.2f}%")
+                else:
+                    lines.append(f"  {sid}: {v:.0f}")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"🌐 全市场解析失败: {e}")
+            lines.append("")
+
+    # === CoinGecko 稳定币细分 ===
+    p = Path('data/coingecko_stablecoins.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p).sort_values('date')
+            latest = df['date'].max()
+            df = df[df['date'] == latest].sort_values('market_cap_usd', ascending=False)
+            lines.append(f"🪙 稳定币细分 ({latest}, CoinGecko)")
+            for _, r in df.iterrows():
+                sym = str(r['symbol'])
+                mc = float(r['market_cap_usd']) / 1e9
+                lines.append(f"  {sym}: ${mc:.2f}B")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"🪙 稳定币细分失败: {e}")
+            lines.append("")
+
+    # === CoinGecko 交易所成交量 ===
+    p = Path('data/coingecko_exchange_vol.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p).sort_values('date')
+            latest = df['date'].max()
+            df = df[df['date'] == latest].sort_values('volume_24h_btc', ascending=False)
+            lines.append(f"🏦 交易所 24h 量 ({latest}, BTC计价)")
+            for _, r in df.head(5).iterrows():
+                name = str(r['exchange_name'])
+                v = float(r['volume_24h_btc'])
+                lines.append(f"  {name}: {v:,.0f} BTC")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"🏦 交易所量失败: {e}")
+            lines.append("")
+
+    # === CoinGecko 多交易所衍生品 ===
+    p = Path('data/coingecko_derivatives.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p).sort_values('date')
+            latest = df['date'].max()
+            df = df[df['date'] == latest]
+            lines.append(f"📊 多交易所衍生品 ({latest}, CoinGecko)")
+            for _, r in df.iterrows():
+                mkt = str(r['market']).replace(' (Futures)', '')
+                idx = str(r['index'])
+                fr = r['funding_rate_annual_pct']
+                oi = float(r['open_interest_usd']) / 1e9
+                fr_str = f"{fr:+.1f}%" if pd.notna(fr) else "N/A"
+                lines.append(f"  {mkt:10s} {idx}: FR {fr_str}, OI ${oi:.2f}B")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"📊 CG 衍生品失败: {e}")
             lines.append("")
 
     # === Yahoo 市场指标 ===
@@ -178,15 +245,15 @@ def build_message():
             if p_nyfed.exists():
                 df = pd.read_csv(p_nyfed)
 
-                def latest_by_series(sid):
+                def lbs(sid):
                     sub = df[df['series'] == sid].sort_values('date')
                     if sub.empty:
                         return None, None
                     return float(sub.iloc[-1]['value']), sub.iloc[-1]['date']
 
-                s, d_s = latest_by_series('SOFR')
-                e, d_e = latest_by_series('EFFR')
-                r, d_r = latest_by_series('RRP_BALANCE')
+                s, d_s = lbs('SOFR')
+                e, d_e = lbs('EFFR')
+                r, d_r = lbs('RRP_BALANCE')
                 if s is not None:
                     lines.append(f"  SOFR: {s:.2f}% ({d_s})")
                 if e is not None:
@@ -198,36 +265,32 @@ def build_message():
             if p_tga.exists():
                 df_tga = pd.read_csv(p_tga).sort_values('date')
                 if not df_tga.empty:
-                    tga_val = float(df_tga.iloc[-1]['value'])
-                    tga_date = df_tga.iloc[-1]['date']
-                    lines.append(f"  TGA: ${tga_val:.1f}B ({tga_date})")
+                    lines.append(f"  TGA: ${float(df_tga.iloc[-1]['value']):.1f}B ({df_tga.iloc[-1]['date']})")
             lines.append("")
         except Exception as ex:
-            lines.append(f"💵 流动性 解析失败: {ex}")
+            lines.append(f"💵 流动性失败: {ex}")
             lines.append("")
 
-    # === FRED 宏观（v7 扩展） ===
+    # === FRED 宏观 ===
     p = Path('data/fred_macro.csv')
     if p.exists():
         try:
             df = pd.read_csv(p)
             lines.append("💵 FRED 宏观")
 
-            def latest(sid):
+            def la(sid):
                 sub = df[df['series'] == sid].sort_values('date')
                 if sub.empty:
                     return None, None
                 return float(sub.iloc[-1]['value']), sub.iloc[-1]['date']
 
-            # 准备金
-            v, d = latest('WRESBAL')
+            v, d = la('WRESBAL')
             if v is not None:
                 lines.append(f"  准备金: ${v/1e6:.2f}T ({d})")
 
-            # 收益率曲线
-            t2, _ = latest('DGS2')
-            t10, _ = latest('DGS10')
-            t30, _ = latest('DGS30')
+            t2, _ = la('DGS2')
+            t10, _ = la('DGS10')
+            t30, _ = la('DGS30')
             if t2 is not None:
                 lines.append(f"  2Y: {t2:.2f}%")
             if t10 is not None:
@@ -237,179 +300,113 @@ def build_message():
             if t2 is not None and t10 is not None:
                 lines.append(f"  2s10s: {(t10-t2)*100:+.0f}bp")
 
-            # 10Y-3M
-            v, _ = latest('T10Y3M')
+            v, _ = la('T10Y3M')
             if v is not None:
                 lines.append(f"  10Y-3M: {v*100:+.0f}bp")
 
-            # 真实利率 + Breakeven
-            v, _ = latest('DFII10')
+            v, _ = la('DFII10')
             if v is not None:
                 lines.append(f"  10Y TIPS: {v:.2f}%")
-            v, _ = latest('T5YIE')
+            v, _ = la('T5YIE')
             if v is not None:
                 lines.append(f"  5Y Breakeven: {v:.2f}%")
-            v, _ = latest('T10YIE')
+            v, _ = la('T10YIE')
             if v is not None:
                 lines.append(f"  10Y Breakeven: {v:.2f}%")
 
-            # HY 分层
-            v, _ = latest('BAMLH0A0HYM2')
+            v, _ = la('BAMLH0A0HYM2')
             if v is not None:
-                lines.append(f"  HY OAS 整体: {v*100:.0f}bp")
-            v, _ = latest('BAMLH0A1HYBB')
+                lines.append(f"  HY OAS: {v*100:.0f}bp")
+            v, _ = la('BAMLH0A1HYBB')
             if v is not None:
                 lines.append(f"    BB: {v*100:.0f}bp")
-            v, _ = latest('BAMLH0A2HYB')
+            v, _ = la('BAMLH0A2HYB')
             if v is not None:
                 lines.append(f"    B: {v*100:.0f}bp")
-            v, _ = latest('BAMLH0A3HYC')
+            v, _ = la('BAMLH0A3HYC')
             if v is not None:
                 lines.append(f"    CCC: {v*100:.0f}bp")
 
-            # IG 分层
-            v, _ = latest('BAMLC0A0CM')
+            v, _ = la('BAMLC0A0CM')
             if v is not None:
-                lines.append(f"  IG OAS 整体: {v*100:.0f}bp")
-            v, _ = latest('BAMLC0A1CAAA')
+                lines.append(f"  IG OAS: {v*100:.0f}bp")
+            v, _ = la('BAMLC0A1CAAA')
             if v is not None:
                 lines.append(f"    AAA: {v*100:.0f}bp")
-            v, _ = latest('BAMLC0A4CBBB')
+            v, _ = la('BAMLC0A4CBBB')
             if v is not None:
                 lines.append(f"    BBB: {v*100:.0f}bp")
 
-            # 期限溢价
-            v, _ = latest('THREEFYTP10')
+            v, _ = la('THREEFYTP10')
             if v is not None:
-                lines.append(f"  10Y 期限溢价: {v:.2f}% (ACM)")
+                lines.append(f"  10Y 期限溢价: {v:.2f}%")
 
-            # CP 利差
-            cp, _ = latest('CPF3M')
-            tb, _ = latest('TB3MS')
+            cp, _ = la('CPF3M')
+            tb, _ = la('TB3MS')
             if cp is not None and tb is not None:
-                lines.append(f"  CP-Tbill: {(cp-tb)*100:+.0f}bp (3M)")
-            cp60, _ = latest('RIFSPPNA2P2D60NB')
+                lines.append(f"  CP-Tbill: {(cp-tb)*100:+.0f}bp")
+            cp60, _ = la('RIFSPPNA2P2D60NB')
             if cp60 is not None and tb is not None:
-                lines.append(f"  CP60-Tbill: {(cp60-tb)*100:+.0f}bp (60D)")
+                lines.append(f"  CP60-Tbill: {(cp60-tb)*100:+.0f}bp")
 
-            # SLOOS
-            v, d = latest('DRTSCILM')
+            v, d = la('DRTSCILM')
             if v is not None:
                 lines.append(f"  SLOOS: {v:.1f}% ({d})")
-
-            # 商业地产
-            v, d = latest('DRCRELEXFACBS')
+            v, d = la('DRCRELEXFACBS')
             if v is not None:
-                lines.append(f"  商业地产拖欠率: {v:.2f}% ({d}, 季度)")
+                lines.append(f"  商业地产拖欠率: {v:.2f}% ({d})")
 
             lines.append("")
         except Exception as e:
-            lines.append(f"💵 FRED 解析失败: {e}")
+            lines.append(f"💵 FRED 失败: {e}")
             lines.append("")
 
-    # === 稳定币（含 USDT/USDC） ===
+    # === 稳定币总市值 ===
     p = Path('data/defillama_stablecoin.csv')
-    p_detail = Path('data/defillama_stablecoin_detail.csv')
     if p.exists():
         try:
             df = pd.read_csv(p).sort_values('date').reset_index(drop=True)
             if len(df) >= 1:
                 cur = float(df.iloc[-1]['total_usd']) / 1e9
-                cur_date = df.iloc[-1]['date']
-                lines.append(f"🪙 稳定币总市值 ({cur_date})")
+                lines.append(f"🪙 稳定币总市值 ({df.iloc[-1]['date']})")
                 lines.append(f"  ${cur:.1f}B")
                 if len(df) >= 2:
-                    prev1 = float(df.iloc[-2]['total_usd']) / 1e9
-                    lines.append(f"  1d: {(cur - prev1):+.2f}B")
+                    lines.append(f"  1d: {(cur - float(df.iloc[-2]['total_usd'])/1e9):+.2f}B")
                 if len(df) >= 8:
-                    prev7 = float(df.iloc[-8]['total_usd']) / 1e9
-                    lines.append(f"  7d: {(cur - prev7):+.2f}B")
+                    lines.append(f"  7d: {(cur - float(df.iloc[-8]['total_usd'])/1e9):+.2f}B")
                 if len(df) >= 31:
-                    prev30 = float(df.iloc[-31]['total_usd']) / 1e9
-                    lines.append(f"  30d: {(cur - prev30):+.2f}B")
-                # USDT/USDC
-                if p_detail.exists():
-                    df_d = pd.read_csv(p_detail).sort_values('date')
-                    if not df_d.empty:
-                        latest_d = df_d['date'].max()
-                        df_d = df_d[df_d['date'] == latest_d]
-                        for _, r in df_d.iterrows():
-                            sym = str(r['symbol'])
-                            v = float(r['supply_usd']) / 1e9
-                            lines.append(f"  {sym}: ${v:.1f}B")
+                    lines.append(f"  30d: {(cur - float(df.iloc[-31]['total_usd'])/1e9):+.2f}B")
                 lines.append("")
         except Exception as e:
-            lines.append(f"🪙 稳定币解析失败: {e}")
+            lines.append(f"🪙 稳定币失败: {e}")
             lines.append("")
 
-    # === Deribit Funding ===
-    p = Path('data/deribit_funding.csv')
-    if p.exists():
+    # === Deribit / OKX ===
+    for fname, title in [
+        ('deribit_funding.csv', '💰 Deribit Funding'),
+        ('deribit_oi.csv', '📊 Deribit OI'),
+        ('okx_funding.csv', '💰 OKX Funding'),
+        ('okx_oi.csv', '📊 OKX OI'),
+    ]:
+        p = Path(f'data/{fname}')
+        if not p.exists():
+            continue
         try:
             df = pd.read_csv(p).sort_values('datetime')
             latest_dt = df['datetime'].max()
             df = df[df['datetime'] == latest_dt]
-            lines.append(f"💰 Deribit Funding ({latest_dt} UTC)")
+            lines.append(f"{title} ({latest_dt} UTC)")
             for _, r in df.iterrows():
-                sym = str(r['symbol'])
-                rate_8h = float(r['funding_rate']) * 100
-                rate_annual = rate_8h * 3 * 365
-                lines.append(f"  {sym}: {rate_annual:+.2f}% 年化 ({rate_8h:+.4f}%/8h)")
+                sym = str(r['symbol']).replace('USDT', '').replace('-SWAP', '')
+                if 'funding' in fname:
+                    rate_8h = float(r['funding_rate']) * 100
+                    lines.append(f"  {sym}: {rate_8h * 3 * 365:+.2f}% 年化 ({rate_8h:+.4f}%/8h)")
+                else:
+                    oi_col = 'oi_usd' if 'oi_usd' in r else 'oi'
+                    lines.append(f"  {sym}: ${float(r[oi_col])/1e9:.2f}B")
             lines.append("")
         except Exception as e:
-            lines.append(f"💰 Deribit Funding 解析失败: {e}")
-            lines.append("")
-
-    # === Deribit OI ===
-    p = Path('data/deribit_oi.csv')
-    if p.exists():
-        try:
-            df = pd.read_csv(p).sort_values('datetime')
-            latest_dt = df['datetime'].max()
-            df = df[df['datetime'] == latest_dt]
-            lines.append(f"📊 Deribit OI ({latest_dt} UTC, perp only)")
-            for _, r in df.iterrows():
-                sym = str(r['symbol'])
-                oi_usd = float(r['oi_usd']) / 1e9
-                lines.append(f"  {sym}: ${oi_usd:.2f}B")
-            lines.append("")
-        except Exception as e:
-            lines.append(f"📊 Deribit OI 解析失败: {e}")
-            lines.append("")
-
-    # === OKX Funding ===
-    p = Path('data/okx_funding.csv')
-    if p.exists():
-        try:
-            df = pd.read_csv(p).sort_values('datetime')
-            latest_dt = df['datetime'].max()
-            df = df[df['datetime'] == latest_dt]
-            lines.append(f"💰 OKX Funding ({latest_dt} UTC)")
-            for _, r in df.iterrows():
-                sym = str(r['symbol']).replace('USDT', '')
-                rate_8h = float(r['funding_rate']) * 100
-                rate_annual = rate_8h * 3 * 365
-                lines.append(f"  {sym}: {rate_annual:+.2f}% 年化 ({rate_8h:+.4f}%/8h)")
-            lines.append("")
-        except Exception as e:
-            lines.append(f"💰 OKX Funding 解析失败: {e}")
-            lines.append("")
-
-    # === OKX OI ===
-    p = Path('data/okx_oi.csv')
-    if p.exists():
-        try:
-            df = pd.read_csv(p).sort_values('datetime')
-            latest_dt = df['datetime'].max()
-            df = df[df['datetime'] == latest_dt]
-            lines.append(f"📊 OKX OI ({latest_dt} UTC, perp only)")
-            for _, r in df.iterrows():
-                sym = str(r['symbol']).replace('USDT', '')
-                oi_usd = float(r['oi_usd']) / 1e9
-                lines.append(f"  {sym}: ${oi_usd:.2f}B")
-            lines.append("")
-        except Exception as e:
-            lines.append(f"📊 OKX OI 解析失败: {e}")
+            lines.append(f"{title} 失败: {e}")
             lines.append("")
 
     # === OKX 爆仓 ===
@@ -421,26 +418,23 @@ def build_message():
             latest = df['dt'].max()
             recent = df[df['dt'] >= latest - pd.Timedelta(hours=24)]
             if not recent.empty:
-                lines.append(f"💥 OKX 爆仓（最近 24h）")
+                lines.append("💥 OKX 爆仓（最近 24h）")
                 for uly in recent['uly'].unique():
                     sub = recent[recent['uly'] == uly].copy()
-                    contract_size = 0.01 if 'BTC' in uly else 0.1
-                    sub['usd'] = sub['size'] * contract_size * sub['price']
-                    longs_size = sub[sub['pos_side'] == 'long']['size'].sum()
-                    shorts_size = sub[sub['pos_side'] == 'short']['size'].sum()
-                    longs_usd = sub[sub['pos_side'] == 'long']['usd'].sum() / 1e6
-                    shorts_usd = sub[sub['pos_side'] == 'short']['usd'].sum() / 1e6
+                    cs = 0.01 if 'BTC' in uly else 0.1
+                    sub['usd'] = sub['size'] * cs * sub['price']
+                    longs = sub[sub['pos_side'] == 'long']['size'].sum()
+                    shorts = sub[sub['pos_side'] == 'short']['size'].sum()
+                    lu = sub[sub['pos_side'] == 'long']['usd'].sum() / 1e6
+                    su = sub[sub['pos_side'] == 'short']['usd'].sum() / 1e6
                     sym = uly.replace('-USDT', '')
-                    lines.append(
-                        f"  {sym}: 多 {longs_size:.0f}张 (${longs_usd:.1f}M) / "
-                        f"空 {shorts_size:.0f}张 (${shorts_usd:.1f}M)"
-                    )
+                    lines.append(f"  {sym}: 多 {longs:.0f}张 (${lu:.1f}M) / 空 {shorts:.0f}张 (${su:.1f}M)")
                 lines.append("")
         except Exception as e:
-            lines.append(f"💥 爆仓解析失败: {e}")
+            lines.append(f"💥 爆仓失败: {e}")
             lines.append("")
 
-    # === Deribit DVOL ===
+    # === DVOL ===
     p = Path('data/deribit_dvol.csv')
     if p.exists():
         try:
@@ -449,15 +443,13 @@ def build_message():
             df = df[df['date'] == latest_date]
             lines.append(f"📉 Deribit DVOL ({latest_date}, 30d IV)")
             for _, r in df.iterrows():
-                ccy = r['currency']
-                close = float(r['close'])
-                lines.append(f"  {ccy}: {close:.2f}")
+                lines.append(f"  {r['currency']}: {float(r['close']):.2f}")
             lines.append("")
         except Exception as e:
-            lines.append(f"📉 DVOL 解析失败: {e}")
+            lines.append(f"📉 DVOL 失败: {e}")
             lines.append("")
 
-    # === Blockchain.com On-chain ===
+    # === On-chain ===
     p = Path('data/blockchain_com.csv')
     if p.exists():
         try:
@@ -466,8 +458,7 @@ def build_message():
                 df = df[df['n-transactions'].notna()]
             if not df.empty:
                 latest = df.iloc[-1]
-                date = latest['date']
-                lines.append(f"⛓️ BTC On-chain ({date}, Blockchain.com)")
+                lines.append(f"⛓️ BTC On-chain ({latest['date']})")
                 if pd.notna(latest.get('market-price')):
                     lines.append(f"  价格: ${float(latest['market-price']):,.0f}")
                 if pd.notna(latest.get('n-transactions')):
@@ -475,11 +466,10 @@ def build_message():
                 if pd.notna(latest.get('n-unique-addresses')):
                     lines.append(f"  活跃地址: {int(latest['n-unique-addresses']):,}")
                 if pd.notna(latest.get('hash-rate')):
-                    hr = float(latest['hash-rate']) / 1e6
-                    lines.append(f"  算力: {hr:.1f} EH/s (7d MA)")
+                    lines.append(f"  算力: {float(latest['hash-rate'])/1e6:.1f} EH/s")
                 lines.append("")
         except Exception as e:
-            lines.append(f"⛓️ On-chain 解析失败: {e}")
+            lines.append(f"⛓️ On-chain 失败: {e}")
             lines.append("")
 
     # === Fear & Greed ===
@@ -488,14 +478,11 @@ def build_message():
         try:
             df = pd.read_csv(p)
             latest = df.sort_values('date').iloc[-1]
-            date = latest['date']
-            value = int(latest['value'])
-            cls = latest['classification']
-            lines.append(f"😱 Fear & Greed ({date}, alternative.me)")
-            lines.append(f"  {value} - {cls}")
+            lines.append(f"😱 Fear & Greed ({latest['date']})")
+            lines.append(f"  {int(latest['value'])} - {latest['classification']}")
             lines.append("")
         except Exception as e:
-            lines.append(f"😱 FearGreed 解析失败: {e}")
+            lines.append(f"😱 F&G 失败: {e}")
             lines.append("")
 
     # === CME FedWatch ===
@@ -505,61 +492,37 @@ def build_message():
             df = pd.read_csv(p)
             if not df.empty:
                 latest = df.iloc[-1]
-                date = latest['date']
-                effr = latest.get('effr')
-                target = latest.get('current_target')
-                lines.append(f"🏛️ CME FedWatch ({date})")
-                if pd.notna(target):
-                    lines.append(f"  当前目标区间: {target}")
-                if pd.notna(effr):
-                    lines.append(f"  EFFR: {float(effr):.2f}%")
+                lines.append(f"🏛️ CME FedWatch ({latest['date']})")
+                if pd.notna(latest.get('current_target')):
+                    lines.append(f"  目标区间: {latest['current_target']}")
+                if pd.notna(latest.get('effr')):
+                    lines.append(f"  EFFR: {float(latest['effr']):.2f}%")
                 lines.append("")
         except Exception as e:
-            lines.append(f"🏛️ CME 解析失败: {e}")
+            lines.append(f"🏛️ CME 失败: {e}")
             lines.append("")
 
-    # === Farside BTC ETF ===
-    p = Path('data/farside_btc_etf.csv')
-    if p.exists():
+    # === Farside ETF ===
+    for fname, title in [('farside_btc_etf.csv', '📈 BTC ETF'), ('farside_eth_etf.csv', '📈 ETH ETF')]:
+        p = Path(f'data/{fname}')
+        if not p.exists():
+            continue
         try:
             df = pd.read_csv(p)
             mask = df.iloc[:, 0].astype(str).str.match(r'\d{2} \w{3} \d{4}')
             df = df[mask]
-            total_col = pd.to_numeric(df.iloc[:, 13], errors='coerce')
-            df = df[total_col.notna() & (total_col != 0)]
-            if not df.empty:
-                last = df.iloc[-1]
-                date = last.iloc[0]
-                total = last.iloc[13]
-                lines.append(f"📈 BTC 现货 ETF 净流")
-                lines.append(f"  {date}: US${total}m (Farside)")
+            total_col = pd.to_numeric(df.iloc[:, -2], errors='coerce')
+            df2 = df[total_col.notna() & (total_col != 0)]
+            if not df2.empty:
+                last = df2.iloc[-1]
+                lines.append(f"{title} 净流")
+                lines.append(f"  {last.iloc[0]}: US${last.iloc[-2]}m")
                 lines.append("")
         except Exception as e:
-            lines.append(f"📈 Farside BTC 解析失败: {e}")
+            lines.append(f"{title} 失败: {e}")
             lines.append("")
 
-    # === Farside ETH ETF ===
-    p = Path('data/farside_eth_etf.csv')
-    if p.exists():
-        try:
-            df = pd.read_csv(p)
-            mask = df.iloc[:, 0].astype(str).str.match(r'\d{2} \w{3} \d{4}')
-            df = df[mask]
-            if df.shape[1] >= 2:
-                total_col = pd.to_numeric(df.iloc[:, -2], errors='coerce')
-                df2 = df[total_col.notna() & (total_col != 0)]
-                if not df2.empty:
-                    last = df2.iloc[-1]
-                    date = last.iloc[0]
-                    total = last.iloc[-2]
-                    lines.append(f"📈 ETH 现货 ETF 净流")
-                    lines.append(f"  {date}: US${total}m (Farside)")
-                    lines.append("")
-        except Exception as e:
-            lines.append(f"📈 Farside ETH 解析失败: {e}")
-            lines.append("")
-
-    # === 数据生成时间戳 ===
+    # === 时间戳 ===
     now_utc = datetime.now(timezone.utc)
     now_kr = now_utc.astimezone(timezone(timedelta(hours=9)))
     lines.append(f"⏱️ 数据生成: {now_utc.strftime('%Y-%m-%d %H:%M')} UTC / {now_kr.strftime('%H:%M')} 韩国")
@@ -569,10 +532,10 @@ def build_message():
 
 
 def send(content):
-    timestamp = str(int(time.time()))
+    ts = str(int(time.time()))
     payload = {
-        "timestamp": timestamp,
-        "sign": gen_sign(timestamp, SECRET),
+        "timestamp": ts,
+        "sign": gen_sign(ts, SECRET),
         "msg_type": "text",
         "content": {"text": content}
     }
