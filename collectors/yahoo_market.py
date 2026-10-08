@@ -1,5 +1,7 @@
 """
-Yahoo Finance 市场数据（VIX / DXY / 黄金 / 原油）
+Yahoo Finance 市场数据
+- VIX / DXY / GOLD / OIL（原）
+- NDX（纳斯达克 100）/ TLT（20Y+ 美债 ETF）（新增）
 API: https://query1.finance.yahoo.com/v8/finance/chart/{symbol}
 无需 key
 """
@@ -17,13 +19,19 @@ SYMBOLS = {
     'DX-Y.NYB':  'DXY',
     'GC=F':      'GOLD',
     'CL=F':      'OIL',
+    '^NDX':      'NDX',
+    'TLT':       'TLT',
 }
 
 
 def fetch(symbol, yahoo_id, days=90):
     url = f'{BASE}/{yahoo_id}'
     params = {'interval': '1d', 'range': f'{days}d'}
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/120.0.0.0 Safari/537.36'
+    }
     r = requests.get(url, params=params, headers=headers, timeout=30)
     r.raise_for_status()
     data = r.json()

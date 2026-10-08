@@ -1,11 +1,10 @@
 """
-飞书机器人通知（带签名校验）
-环境变量: FEISHU_WEBHOOK, FEISHU_SECRET
-
-显示层约定（v6，2026-10-05）：
-- 新增：Eurostat HICP + BOJ 隔夜拆借
-- BIS 段标注"月度"
-- cron 改为 UTC 20:00（韩国次日 05:00）
+飞书机器人通知（v7，2026-10-08）
+新增：
+- FRED 段：10Y-3M / 10Y TIPS / 5Y+10Y Breakeven / BB/B/CCC / AAA/BBB / SLOOS
+- 稳定币段：USDT / USDC 分开
+- 新增 ETH ETF Flow
+- 市场指标：VIX/DXY/GOLD/OIL/NDX/TLT
 """
 import os
 import sys
@@ -34,7 +33,7 @@ def gen_sign(timestamp, secret):
 def build_message():
     lines = ["📊 GMRE 数据更新", ""]
 
-    # === CFTC 金融期货 COT（含 CME BTC） ===
+    # === CFTC 金融期货 COT ===
     p = Path('data/cftc_cot.csv')
     if p.exists():
         try:
@@ -57,7 +56,7 @@ def build_message():
             lines.append(f"🏦 CFTC 解析失败: {e}")
             lines.append("")
 
-    # === CFTC FX COT（排除 EUR） ===
+    # === CFTC FX COT ===
     p = Path('data/cftc_fx.csv')
     if p.exists():
         try:
@@ -78,7 +77,7 @@ def build_message():
             lines.append(f"💱 FX COT 解析失败: {e}")
             lines.append("")
 
-    # === 全球央行政策利率（BIS，月度） ===
+    # === BIS 全球央行利率 ===
     p = Path('data/bis_cbpol.csv')
     if p.exists():
         try:
@@ -96,7 +95,7 @@ def build_message():
             lines.append(f"🏛️ BIS 解析失败: {e}")
             lines.append("")
 
-    # === Eurostat HICP（欧元区 CPI） ===
+    # === Eurostat HICP ===
     p = Path('data/eurostat_hicp.csv')
     if p.exists():
         try:
@@ -132,7 +131,7 @@ def build_message():
             lines.append(f"🇪🇺 ECB 解析失败: {e}")
             lines.append("")
 
-    # === BOJ 日本央行利率 ===
+    # === BOJ ===
     p = Path('data/boj_rates.csv')
     if p.exists():
         try:
@@ -148,7 +147,7 @@ def build_message():
             lines.append(f"🇯🇵 BOJ 解析失败: {e}")
             lines.append("")
 
-    # === Yahoo 市场指标（VIX / DXY / GOLD / OIL） ===
+    # === Yahoo 市场指标 ===
     p = Path('data/yahoo_market.csv')
     if p.exists():
         try:
@@ -161,6 +160,8 @@ def build_message():
                 v = float(r['value'])
                 if sym in ('GOLD', 'OIL'):
                     lines.append(f"  {sym}: ${v:,.2f}")
+                elif sym == 'NDX':
+                    lines.append(f"  {sym}: {v:,.1f}")
                 else:
                     lines.append(f"  {sym}: {v:.2f}")
             lines.append("")
@@ -168,13 +169,12 @@ def build_message():
             lines.append(f"📈 Yahoo 解析失败: {e}")
             lines.append("")
 
-    # === 流动性（NY Fed + Treasury TGA） ===
+    # === 流动性 ===
     p_nyfed = Path('data/nyfed_rates.csv')
     p_tga = Path('data/treasury_tga.csv')
     if p_nyfed.exists() or p_tga.exists():
         try:
             lines.append("💵 流动性")
-
             if p_nyfed.exists():
                 df = pd.read_csv(p_nyfed)
 
@@ -187,7 +187,6 @@ def build_message():
                 s, d_s = latest_by_series('SOFR')
                 e, d_e = latest_by_series('EFFR')
                 r, d_r = latest_by_series('RRP_BALANCE')
-
                 if s is not None:
                     lines.append(f"  SOFR: {s:.2f}% ({d_s})")
                 if e is not None:
@@ -196,20 +195,18 @@ def build_message():
                     lines.append(f"  利差: {(s-e)*100:+.1f}bp")
                 if r is not None:
                     lines.append(f"  ON RRP: ${r:.2f}B ({d_r})")
-
             if p_tga.exists():
                 df_tga = pd.read_csv(p_tga).sort_values('date')
                 if not df_tga.empty:
                     tga_val = float(df_tga.iloc[-1]['value'])
                     tga_date = df_tga.iloc[-1]['date']
                     lines.append(f"  TGA: ${tga_val:.1f}B ({tga_date})")
-
             lines.append("")
         except Exception as ex:
             lines.append(f"💵 流动性 解析失败: {ex}")
             lines.append("")
 
-    # === FRED 宏观 ===
+    # === FRED 宏观（v7 扩展） ===
     p = Path('data/fred_macro.csv')
     if p.exists():
         try:
@@ -222,18 +219,12 @@ def build_message():
                     return None, None
                 return float(sub.iloc[-1]['value']), sub.iloc[-1]['date']
 
+            # 准备金
             v, d = latest('WRESBAL')
             if v is not None:
-                lines.append(f"  准备金: ${v/1e6:.2f}T ({d}, H.4.1)")
+                lines.append(f"  准备金: ${v/1e6:.2f}T ({d})")
 
-            v, d = latest('BAMLH0A0HYM2')
-            if v is not None:
-                lines.append(f"  HY OAS: {v*100:.0f}bp ({d}, ICE BofA)")
-
-            v, d = latest('BAMLC0A0CM')
-            if v is not None:
-                lines.append(f"  IG OAS: {v*100:.0f}bp")
-
+            # 收益率曲线
             t2, _ = latest('DGS2')
             t10, _ = latest('DGS10')
             t30, _ = latest('DGS30')
@@ -246,30 +237,79 @@ def build_message():
             if t2 is not None and t10 is not None:
                 lines.append(f"  2s10s: {(t10-t2)*100:+.0f}bp")
 
+            # 10Y-3M
+            v, _ = latest('T10Y3M')
+            if v is not None:
+                lines.append(f"  10Y-3M: {v*100:+.0f}bp")
+
+            # 真实利率 + Breakeven
+            v, _ = latest('DFII10')
+            if v is not None:
+                lines.append(f"  10Y TIPS: {v:.2f}%")
+            v, _ = latest('T5YIE')
+            if v is not None:
+                lines.append(f"  5Y Breakeven: {v:.2f}%")
+            v, _ = latest('T10YIE')
+            if v is not None:
+                lines.append(f"  10Y Breakeven: {v:.2f}%")
+
+            # HY 分层
+            v, _ = latest('BAMLH0A0HYM2')
+            if v is not None:
+                lines.append(f"  HY OAS 整体: {v*100:.0f}bp")
+            v, _ = latest('BAMLH0A1HYBB')
+            if v is not None:
+                lines.append(f"    BB: {v*100:.0f}bp")
+            v, _ = latest('BAMLH0A2HYB')
+            if v is not None:
+                lines.append(f"    B: {v*100:.0f}bp")
+            v, _ = latest('BAMLH0A3HYC')
+            if v is not None:
+                lines.append(f"    CCC: {v*100:.0f}bp")
+
+            # IG 分层
+            v, _ = latest('BAMLC0A0CM')
+            if v is not None:
+                lines.append(f"  IG OAS 整体: {v*100:.0f}bp")
+            v, _ = latest('BAMLC0A1CAAA')
+            if v is not None:
+                lines.append(f"    AAA: {v*100:.0f}bp")
+            v, _ = latest('BAMLC0A4CBBB')
+            if v is not None:
+                lines.append(f"    BBB: {v*100:.0f}bp")
+
+            # 期限溢价
             v, _ = latest('THREEFYTP10')
             if v is not None:
-                lines.append(f"  10Y 期限溢价: {v:.2f}% (ACM, 可修订)")
+                lines.append(f"  10Y 期限溢价: {v:.2f}% (ACM)")
 
+            # CP 利差
             cp, _ = latest('CPF3M')
             tb, _ = latest('TB3MS')
             if cp is not None and tb is not None:
                 lines.append(f"  CP-Tbill: {(cp-tb)*100:+.0f}bp (3M)")
-
             cp60, _ = latest('RIFSPPNA2P2D60NB')
             if cp60 is not None and tb is not None:
-                lines.append(f"  CP60-Tbill: {(cp60-tb)*100:+.0f}bp (60D CP)")
+                lines.append(f"  CP60-Tbill: {(cp60-tb)*100:+.0f}bp (60D)")
 
+            # SLOOS
+            v, d = latest('DRTSCILM')
+            if v is not None:
+                lines.append(f"  SLOOS: {v:.1f}% ({d})")
+
+            # 商业地产
             v, d = latest('DRCRELEXFACBS')
             if v is not None:
-                lines.append(f"  商业地产拖欠率: {v:.2f}% ({d}, 季度, 滞后约 6 月)")
+                lines.append(f"  商业地产拖欠率: {v:.2f}% ({d}, 季度)")
 
             lines.append("")
         except Exception as e:
             lines.append(f"💵 FRED 解析失败: {e}")
             lines.append("")
 
-    # === DefiLlama 稳定币 ===
+    # === 稳定币（含 USDT/USDC） ===
     p = Path('data/defillama_stablecoin.csv')
+    p_detail = Path('data/defillama_stablecoin_detail.csv')
     if p.exists():
         try:
             df = pd.read_csv(p).sort_values('date').reset_index(drop=True)
@@ -278,22 +318,28 @@ def build_message():
                 cur_date = df.iloc[-1]['date']
                 lines.append(f"🪙 稳定币总市值 ({cur_date})")
                 lines.append(f"  ${cur:.1f}B")
-
                 if len(df) >= 2:
                     prev1 = float(df.iloc[-2]['total_usd']) / 1e9
                     lines.append(f"  1d: {(cur - prev1):+.2f}B")
-
                 if len(df) >= 8:
                     prev7 = float(df.iloc[-8]['total_usd']) / 1e9
                     lines.append(f"  7d: {(cur - prev7):+.2f}B")
-
                 if len(df) >= 31:
                     prev30 = float(df.iloc[-31]['total_usd']) / 1e9
                     lines.append(f"  30d: {(cur - prev30):+.2f}B")
-
+                # USDT/USDC
+                if p_detail.exists():
+                    df_d = pd.read_csv(p_detail).sort_values('date')
+                    if not df_d.empty:
+                        latest_d = df_d['date'].max()
+                        df_d = df_d[df_d['date'] == latest_d]
+                        for _, r in df_d.iterrows():
+                            sym = str(r['symbol'])
+                            v = float(r['supply_usd']) / 1e9
+                            lines.append(f"  {sym}: ${v:.1f}B")
                 lines.append("")
         except Exception as e:
-            lines.append(f"🪙 DefiLlama 解析失败: {e}")
+            lines.append(f"🪙 稳定币解析失败: {e}")
             lines.append("")
 
     # === Deribit Funding ===
@@ -472,7 +518,7 @@ def build_message():
             lines.append(f"🏛️ CME 解析失败: {e}")
             lines.append("")
 
-    # === Farside BTC ETF Flow ===
+    # === Farside BTC ETF ===
     p = Path('data/farside_btc_etf.csv')
     if p.exists():
         try:
@@ -489,7 +535,28 @@ def build_message():
                 lines.append(f"  {date}: US${total}m (Farside)")
                 lines.append("")
         except Exception as e:
-            lines.append(f"📈 Farside 解析失败: {e}")
+            lines.append(f"📈 Farside BTC 解析失败: {e}")
+            lines.append("")
+
+    # === Farside ETH ETF ===
+    p = Path('data/farside_eth_etf.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            mask = df.iloc[:, 0].astype(str).str.match(r'\d{2} \w{3} \d{4}')
+            df = df[mask]
+            if df.shape[1] >= 2:
+                total_col = pd.to_numeric(df.iloc[:, -2], errors='coerce')
+                df2 = df[total_col.notna() & (total_col != 0)]
+                if not df2.empty:
+                    last = df2.iloc[-1]
+                    date = last.iloc[0]
+                    total = last.iloc[-2]
+                    lines.append(f"📈 ETH 现货 ETF 净流")
+                    lines.append(f"  {date}: US${total}m (Farside)")
+                    lines.append("")
+        except Exception as e:
+            lines.append(f"📈 Farside ETH 解析失败: {e}")
             lines.append("")
 
     # === 数据生成时间戳 ===
@@ -507,9 +574,7 @@ def send(content):
         "timestamp": timestamp,
         "sign": gen_sign(timestamp, SECRET),
         "msg_type": "text",
-        "content": {
-            "text": content
-        }
+        "content": {"text": content}
     }
     r = requests.post(WEBHOOK, json=payload, timeout=30)
     print(f'Feishu: HTTP {r.status_code}')
@@ -520,12 +585,10 @@ def main():
     if not WEBHOOK or not SECRET:
         print('❌ 缺 FEISHU_WEBHOOK 或 FEISHU_SECRET')
         sys.exit(1)
-
     msg = build_message()
     print('===== 消息内容 =====')
     print(msg)
     print('===================')
-
     send(msg)
 
 
