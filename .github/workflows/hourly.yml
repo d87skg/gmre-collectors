@@ -2,7 +2,6 @@ name: Hourly Exchange Data
 
 on:
   schedule:
-    # Every hour
     - cron: '0 * * * *'
   workflow_dispatch:
 
@@ -20,12 +19,12 @@ jobs:
       - name: Install deps
         run: pip install --quiet pandas requests
 
-      - name: Run exchange collectors
+      - name: Run collectors
         run: |
           mkdir -p data/
-          python collectors/binance_funding.py || echo "Binance funding failed"
-          python collectors/binance_oi.py || echo "Binance OI failed"
-          python collectors/okx_liquidation.py || echo "OKX liq failed"
+          python collectors/binance_funding.py || echo "failed"
+          python collectors/binance_oi.py || echo "failed"
+          python collectors/okx_liquidation.py || echo "failed"
 
       - name: Commit data
         run: |
@@ -33,7 +32,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/ || true
           if git diff --staged --quiet; then
-            echo "no change, skip commit"
+            echo "no change"
           else
             git commit -m "hourly: $(date -u +%Y-%m-%dT%H:%M)"
             git push || echo "push failed"
