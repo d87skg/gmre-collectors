@@ -2,8 +2,8 @@ name: Hourly Exchange Data
 
 on:
   schedule:
-    # Every 4 hours: UTC 0, 4, 8, 12, 16, 20
-    - cron: '0 0,4,8,12,16,20 * * *'
+    # Every hour
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -17,13 +17,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Install deps
-        run: pip install pandas requests
+        run: pip install --quiet pandas requests
 
       - name: Run exchange collectors
         run: |
