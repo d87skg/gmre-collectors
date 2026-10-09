@@ -2,7 +2,10 @@ name: Collect Data
 
 on:
   schedule:
-    - cron: '0 20 * * *'
+    # UTC 16:42 = 北京 00:42（比本地 00:12 晚 30 分钟）
+    - cron: '42 16 * * *'
+    # UTC 00:37 = 北京 08:37（比本地 08:07 晚 30 分钟）
+    - cron: '37 0 * * *'
   workflow_dispatch:
 
 permissions:

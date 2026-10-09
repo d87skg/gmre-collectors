@@ -1,9 +1,9 @@
 name: Hourly Exchange Data
 
 on:
-  schedule:
-    # 每小时整点运行（UTC）
-    - cron: '0 * * * *'
+    schedule:
+    # 每 4 小时一次（UTC 0/4/8/12/16/20）
+    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 permissions:
