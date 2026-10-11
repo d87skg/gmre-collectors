@@ -169,7 +169,7 @@ def build_message():
             lines.append(f"🇯🇵 BOJ 解析失败: {e}")
             lines.append("")
 
-    # === CoinGecko 全市场 ===
+        # === CoinGecko 全市场 ===
     p = Path('data/coingecko_global.csv')
     if p.exists():
         try:
@@ -180,7 +180,7 @@ def build_message():
             for _, r in df.iterrows():
                 sid = str(r['series'])
                 v = float(r['value'])
-                                if 'USD' in sid:
+                if 'USD' in sid:
                     if v >= 1e12:
                         lines.append(f"  {sid.replace('_USD', '')}: ${v/1e12:.2f}T")
                     elif v >= 1e9:
