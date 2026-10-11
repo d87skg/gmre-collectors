@@ -1,11 +1,11 @@
 """
 飞书机器人通知（v10，2026-10-11）
-新增：
 - Funding 标注"永续"
 - 爆仓标注"仅 OKX ≈5-10% 市场"
 - CoinGecko 衍生品 FR 跨所差异
 - ETF 5d 滚动净流
 - CFTC COT z-score（滚动 52 周）
+- IMF 新兴市场外储
 """
 import os
 import sys
@@ -32,7 +32,6 @@ def gen_sign(timestamp, secret):
 
 
 def calc_cot_zscore(df):
-    """计算各 series 的滚动 52 周 z-score"""
     z_scores = {}
     try:
         df = df.sort_values('date')
@@ -53,7 +52,7 @@ def calc_cot_zscore(df):
 def build_message():
     lines = ["📊 GMRE 数据更新", ""]
 
-    # === CFTC COT（含 z-score） ===
+    # === CFTC COT ===
     p = Path('data/cftc_cot.csv')
     if p.exists():
         try:
@@ -104,7 +103,7 @@ def build_message():
             lines.append(f"💱 FX COT 解析失败: {e}")
             lines.append("")
 
-    # === BIS 全球央行利率 ===
+    # === BIS ===
     p = Path('data/bis_cbpol.csv')
     if p.exists():
         try:
@@ -122,7 +121,7 @@ def build_message():
             lines.append(f"🏛️ BIS 解析失败: {e}")
             lines.append("")
 
-    # === Eurostat HICP ===
+    # === Eurostat ===
     p = Path('data/eurostat_hicp.csv')
     if p.exists():
         try:
@@ -169,7 +168,7 @@ def build_message():
             lines.append(f"🇯🇵 BOJ 解析失败: {e}")
             lines.append("")
 
-        # === CoinGecko 全市场 ===
+    # === CoinGecko 全市场 ===
     p = Path('data/coingecko_global.csv')
     if p.exists():
         try:
@@ -182,11 +181,12 @@ def build_message():
                 v = float(r['value'])
                 if 'USD' in sid:
                     if v >= 1e12:
-                        lines.append(f"  {sid.replace('_USD', '')}: ${v/1e12:.2f}T")
+                        val_str = f"${v/1e12:.2f}T"
                     elif v >= 1e9:
-                        lines.append(f"  {sid.replace('_USD', '')}: ${v/1e9:.1f}B")
+                        val_str = f"${v/1e9:.1f}B"
                     else:
-                        lines.append(f"  {sid.replace('_USD', '')}: ${v:.0f}")
+                        val_str = f"${v:.0f}"
+                    lines.append(f"  {sid.replace('_USD', '')}: {val_str}")
                 elif 'DOMINANCE' in sid:
                     lines.append(f"  {sid.replace('_DOMINANCE', '')} 市占率: {v:.2f}%")
                 else:
@@ -230,7 +230,7 @@ def build_message():
             lines.append(f"🏦 交易所量失败: {e}")
             lines.append("")
 
-    # === CoinGecko 多交易所衍生品（含 FR 跨所差异） ===
+    # === CoinGecko 多交易所衍生品 ===
     p = Path('data/coingecko_derivatives.csv')
     if p.exists():
         try:
@@ -245,8 +245,6 @@ def build_message():
                 oi = float(r['open_interest_usd']) / 1e9
                 fr_str = f"{fr:+.1f}%" if pd.notna(fr) else "N/A"
                 lines.append(f"  {mkt:10s} {idx}: FR {fr_str}, OI ${oi:.2f}B")
-
-            # FR 跨所差异检查
             for idx in ['BTC', 'ETH']:
                 sub = df[df['index'] == idx]
                 frs = sub['funding_rate_annual_pct'].dropna()
@@ -259,7 +257,7 @@ def build_message():
             lines.append(f"📊 CG 衍生品失败: {e}")
             lines.append("")
 
-    # === Yahoo 市场指标 ===
+    # === Yahoo ===
     p = Path('data/yahoo_market.csv')
     if p.exists():
         try:
@@ -316,7 +314,7 @@ def build_message():
             lines.append(f"💵 流动性失败: {ex}")
             lines.append("")
 
-    # === FRED 宏观 ===
+    # === FRED ===
     p = Path('data/fred_macro.csv')
     if p.exists():
         try:
@@ -426,7 +424,7 @@ def build_message():
             lines.append(f"🪙 稳定币失败: {e}")
             lines.append("")
 
-    # === Deribit / OKX（加"永续"标注） ===
+    # === Deribit / OKX ===
     for fname, title in [
         ('deribit_funding.csv', '💰 Deribit 永续 Funding'),
         ('deribit_oi.csv', '📊 Deribit OI'),
@@ -454,7 +452,7 @@ def build_message():
             lines.append(f"{title} 失败: {e}")
             lines.append("")
 
-    # === OKX 爆仓（加"仅 OKX"标注） ===
+    # === OKX 爆仓 ===
     p = Path('data/okx_liquidation.csv')
     if p.exists():
         try:
@@ -547,7 +545,7 @@ def build_message():
             lines.append(f"🏛️ CME 失败: {e}")
             lines.append("")
 
-    # === Farside ETF（加 5d 滚动） ===
+    # === Farside ETF ===
     for fname, title in [('farside_btc_etf.csv', '📈 BTC ETF'),
                           ('farside_eth_etf.csv', '📈 ETH ETF')]:
         p = Path(f'data/{fname}')
@@ -556,15 +554,14 @@ def build_message():
         try:
             df = pd.read_csv(p)
             mask = df.iloc[:, 0].astype(str).str.match(r'\d{2} \w{3} \d{4}')
-            df = df[mask]
+            df = df[mask].copy()
             total_col = pd.to_numeric(df.iloc[:, -2], errors='coerce')
             valid = df[total_col.notna()].copy()
-            valid['total'] = total_col[total_col.notna()].values
             if not valid.empty:
+                valid['total'] = total_col[total_col.notna()].values
                 last = valid.iloc[-1]
                 lines.append(f"{title} 净流")
                 lines.append(f"  {last.iloc[0]}: US${last['total']}m")
-                # 5d 滚动
                 if len(valid) >= 5:
                     sum5 = valid['total'].tail(5).sum()
                     lines.append(f"  5d 滚动: US${sum5:+.1f}m")
@@ -573,7 +570,7 @@ def build_message():
             lines.append(f"{title} 失败: {e}")
             lines.append("")
 
-    # === IMF 外储/黄金 ===
+    # === IMF 外储 ===
     p = Path('data/imf_reserves.csv')
     if p.exists():
         try:
