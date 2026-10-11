@@ -608,9 +608,22 @@ def send(content):
         "msg_type": "text",
         "content": {"text": content}
     }
-    r = requests.post(WEBHOOK, json=payload, timeout=30)
-    print(f'Feishu: HTTP {r.status_code}')
-    print(r.text)
+    # 重试 3 次，每次 60 秒超时
+    last_err = None
+    for attempt in range(3):
+        try:
+            r = requests.post(WEBHOOK, json=payload, timeout=60)
+            print(f'Feishu: HTTP {r.status_code} (attempt {attempt+1})')
+            print(r.text)
+            if r.status_code == 200:
+                return
+            last_err = f'HTTP {r.status_code}'
+        except Exception as e:
+            print(f'attempt {attempt+1} 失败: {e}')
+            last_err = e
+            time.sleep(5)
+    print(f'❌ 飞书推送 3 次均失败: {last_err}')
+    sys.exit(1)
 
 
 def main():
