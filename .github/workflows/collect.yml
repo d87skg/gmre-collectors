@@ -2,10 +2,7 @@ name: Collect Data
 
 on:
   schedule:
-    # UTC 16:42 = 北京 00:42（比本地 00:12 晚 30 分钟）
-    - cron: '42 16 * * *'
-    # UTC 00:37 = 北京 08:37（比本地 08:07 晚 30 分钟）
-    - cron: '37 0 * * *'
+    - cron: '0 20 * * *'
   workflow_dispatch:
 
 permissions:
@@ -14,7 +11,6 @@ permissions:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,6 +53,7 @@ jobs:
           python collectors/coingecko_stablecoins.py || echo "CG stables failed"
           python collectors/coingecko_exchange_vol.py || echo "CG exvol failed"
           python collectors/coingecko_derivatives.py || echo "CG deriv failed"
+          python collectors/imf_reserves.py || echo "IMF failed"
 
       - name: List data
         run: ls -la data/

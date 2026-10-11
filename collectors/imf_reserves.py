@@ -1,6 +1,5 @@
 """
-IMF SDMX API - 新兴市场外储 + 全球央行黄金储备
-API: https://api.imf.org/external/sdmx/3.0
+IMF SDMX API - 新兴市场外储 + 央行黄金储备
 无需 key
 """
 import requests
@@ -10,47 +9,50 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 OUT = Path('data/imf_reserves.csv')
-BASE = 'https://api.imf.org/external/sdmx/3.0'
 
+# IMF SDMX 2.1 端点（无需认证）
+BASE = 'https://dataservices.imf.org/REST/SDMX_JSON.svc'
+
+# 国家代码（IMF 用 ISO-2）
 COUNTRIES = {
     'IN': 'India',
     'BR': 'Brazil',
     'TR': 'Turkey',
     'ZA': 'South Africa',
     'MX': 'Mexico',
+    'ID': 'Indonesia',
 }
 
 
 def fetch_reserves(country_code):
-    """外汇储备（不含黄金）"""
-    url = f'{BASE}/data/IFS/M.{country_code}.RAFA_USD'
-    params = {
-        'startPeriod': (datetime.utcnow() - timedelta(days=730)).strftime('%Y-%m'),
-        'format': 'jsondata',
-    }
-    r = requests.get(url, params=params, timeout=30)
+    """外汇储备（含黄金，IFS 数据集）"""
+    # IFS: 官方储备资产，单位：USD
+    # 维度：FREQ.A(annual), REF_AREA.<country>, INDICATOR.RAFAGOLD_USD
+    url = f'{BASE}/Dataflow/IFS/'
+    # 用更稳定的端点
+    url = (f'https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/IFS/'
+           f'M.{country_code}.RAFA_USD')
+    r = requests.get(url, timeout=60)
     if r.status_code != 200:
         raise RuntimeError(f'HTTP {r.status_code}: {r.text[:200]}')
     data = r.json()
-    rows = []
     try:
-        series = data['data']['dataSets'][0]['series']
-        for key, s in series.items():
-            for obs_key, obs in s['observations'].items():
-                v = obs[0]
-                if v is None:
-                    continue
-                # 时间从 dimension 取
-                time_dim = data['data']['structure']['dimensions']['observation'][0]
-                d = time_dim['values'][int(obs_key)]['id']
+        obs = data['CompactData']['DataSet']['Series']['Obs']
+        if isinstance(obs, dict):
+            obs = [obs]
+        rows = []
+        for o in obs[-60:]:
+            date = o.get('@TIME_PERIOD', '')
+            v = o.get('@OBS_VALUE')
+            if v and v != '':
                 rows.append({
-                    'date': d,
+                    'date': date,
                     'series': f'RESERVES_{country_code}',
-                    'value': float(v),
+                    'value': float(v) / 1e9,
                 })
-    except (KeyError, IndexError) as e:
+        return rows
+    except (KeyError, TypeError) as e:
         raise RuntimeError(f'解析失败: {e}')
-    return rows
 
 
 def main():
@@ -58,10 +60,10 @@ def main():
     for code in COUNTRIES:
         try:
             rows = fetch_reserves(code)
-            print(f'{code} 外储: {len(rows)} 条')
+            print(f'{code}: {len(rows)} 条')
             all_rows.extend(rows)
         except Exception as e:
-            print(f'{code} 失败: {e}')
+            print(f'{code} 失败: {str(e)[:100]}')
 
     if not all_rows:
         print('❌ 无数据')

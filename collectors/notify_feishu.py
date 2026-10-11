@@ -1,7 +1,11 @@
 """
-飞书机器人通知（v9，2026-10-08）
-- 删掉 Coinalyze（单位混乱 + 需 key）
-- 保留 CoinGecko 全市场 / 稳定币细分 / 交易所量 / 多交易所衍生品
+飞书机器人通知（v10，2026-10-11）
+新增：
+- Funding 标注"永续"
+- 爆仓标注"仅 OKX ≈5-10% 市场"
+- CoinGecko 衍生品 FR 跨所差异
+- ETF 5d 滚动净流
+- CFTC COT z-score（滚动 52 周）
 """
 import os
 import sys
@@ -27,27 +31,50 @@ def gen_sign(timestamp, secret):
     return base64.b64encode(hmac_code).decode('utf-8')
 
 
+def calc_cot_zscore(df):
+    """计算各 series 的滚动 52 周 z-score"""
+    z_scores = {}
+    try:
+        df = df.sort_values('date')
+        for sid in df['series_id'].unique():
+            sub = df[df['series_id'] == sid]['net_noncommercial'].dropna()
+            if len(sub) < 12:
+                continue
+            window = sub.tail(52)
+            mean = window.mean()
+            std = window.std()
+            if std and std > 0:
+                z_scores[sid] = (window.iloc[-1] - mean) / std
+    except Exception:
+        pass
+    return z_scores
+
+
 def build_message():
     lines = ["📊 GMRE 数据更新", ""]
 
-    # === CFTC COT ===
+    # === CFTC COT（含 z-score） ===
     p = Path('data/cftc_cot.csv')
     if p.exists():
         try:
             df = pd.read_csv(p)
             if not df.empty:
+                zs = calc_cot_zscore(df)
                 latest = df['date'].max()
-                df = df[df['date'] == latest].sort_values('series_id')
+                df_latest = df[df['date'] == latest].sort_values('series_id')
                 lines.append(f"🏦 CFTC COT ({latest})")
-                for _, r in df.iterrows():
+                for _, r in df_latest.iterrows():
                     net = int(r['net_noncommercial'])
                     oi = int(r['open_interest']) if pd.notna(r.get('open_interest')) else 0
-                    sid = str(r['series_id']).replace('COT_', '')
+                    sid = str(r['series_id'])
+                    sid_short = sid.replace('COT_', '')
+                    z = zs.get(sid)
+                    z_str = f" | z={z:+.2f}" if z is not None else ""
                     if oi > 0:
                         pct = net / oi * 100
-                        lines.append(f"  {sid}: {net:+,} ({pct:+.1f}% OI)")
+                        lines.append(f"  {sid_short}: {net:+,} ({pct:+.1f}% OI){z_str}")
                     else:
-                        lines.append(f"  {sid}: {net:+,}")
+                        lines.append(f"  {sid_short}: {net:+,}{z_str}")
                 lines.append("")
         except Exception as e:
             lines.append(f"🏦 CFTC 解析失败: {e}")
@@ -59,6 +86,7 @@ def build_message():
         try:
             df = pd.read_csv(p)
             if not df.empty:
+                zs = calc_cot_zscore(df)
                 latest = df['date'].max()
                 df = df[df['date'] == latest]
                 df = df[df['series_id'] != 'COT_EUR'].sort_values('series_id')
@@ -66,8 +94,11 @@ def build_message():
                     lines.append(f"💱 FX COT ({latest}) [EUR 见上]")
                     for _, r in df.iterrows():
                         net = int(r['net_noncommercial'])
-                        sid = str(r['series_id']).replace('COT_', '')
-                        lines.append(f"  {sid}: {net:+,}")
+                        sid = str(r['series_id'])
+                        sid_short = sid.replace('COT_', '')
+                        z = zs.get(sid)
+                        z_str = f" | z={z:+.2f}" if z is not None else ""
+                        lines.append(f"  {sid_short}: {net:+,}{z_str}")
                     lines.append("")
         except Exception as e:
             lines.append(f"💱 FX COT 解析失败: {e}")
@@ -149,15 +180,20 @@ def build_message():
             for _, r in df.iterrows():
                 sid = str(r['series'])
                 v = float(r['value'])
-                if 'USD' in sid:
-                    lines.append(f"  {sid.replace('_USD', '')}: ${v/1e12:.2f}T")
+                                if 'USD' in sid:
+                    if v >= 1e12:
+                        lines.append(f"  {sid.replace('_USD', '')}: ${v/1e12:.2f}T")
+                    elif v >= 1e9:
+                        lines.append(f"  {sid.replace('_USD', '')}: ${v/1e9:.1f}B")
+                    else:
+                        lines.append(f"  {sid.replace('_USD', '')}: ${v:.0f}")
                 elif 'DOMINANCE' in sid:
                     lines.append(f"  {sid.replace('_DOMINANCE', '')} 市占率: {v:.2f}%")
                 else:
                     lines.append(f"  {sid}: {v:.0f}")
             lines.append("")
         except Exception as e:
-            lines.append(f"🌐 全市场解析失败: {e}")
+            lines.append(f"🌐 全市场失败: {e}")
             lines.append("")
 
     # === CoinGecko 稳定币细分 ===
@@ -177,7 +213,7 @@ def build_message():
             lines.append(f"🪙 稳定币细分失败: {e}")
             lines.append("")
 
-    # === CoinGecko 交易所成交量 ===
+    # === CoinGecko 交易所量 ===
     p = Path('data/coingecko_exchange_vol.csv')
     if p.exists():
         try:
@@ -194,7 +230,7 @@ def build_message():
             lines.append(f"🏦 交易所量失败: {e}")
             lines.append("")
 
-    # === CoinGecko 多交易所衍生品 ===
+    # === CoinGecko 多交易所衍生品（含 FR 跨所差异） ===
     p = Path('data/coingecko_derivatives.csv')
     if p.exists():
         try:
@@ -209,6 +245,15 @@ def build_message():
                 oi = float(r['open_interest_usd']) / 1e9
                 fr_str = f"{fr:+.1f}%" if pd.notna(fr) else "N/A"
                 lines.append(f"  {mkt:10s} {idx}: FR {fr_str}, OI ${oi:.2f}B")
+
+            # FR 跨所差异检查
+            for idx in ['BTC', 'ETH']:
+                sub = df[df['index'] == idx]
+                frs = sub['funding_rate_annual_pct'].dropna()
+                if len(frs) >= 2:
+                    diff = frs.max() - frs.min()
+                    if abs(diff) > 5:
+                        lines.append(f"  ⚠️ {idx} FR 跨所差异 {diff:.1f}%")
             lines.append("")
         except Exception as e:
             lines.append(f"📊 CG 衍生品失败: {e}")
@@ -233,7 +278,7 @@ def build_message():
                     lines.append(f"  {sym}: {v:.2f}")
             lines.append("")
         except Exception as e:
-            lines.append(f"📈 Yahoo 解析失败: {e}")
+            lines.append(f"📈 Yahoo 失败: {e}")
             lines.append("")
 
     # === 流动性 ===
@@ -381,11 +426,11 @@ def build_message():
             lines.append(f"🪙 稳定币失败: {e}")
             lines.append("")
 
-    # === Deribit / OKX ===
+    # === Deribit / OKX（加"永续"标注） ===
     for fname, title in [
-        ('deribit_funding.csv', '💰 Deribit Funding'),
+        ('deribit_funding.csv', '💰 Deribit 永续 Funding'),
         ('deribit_oi.csv', '📊 Deribit OI'),
-        ('okx_funding.csv', '💰 OKX Funding'),
+        ('okx_funding.csv', '💰 OKX 永续 Funding'),
         ('okx_oi.csv', '📊 OKX OI'),
     ]:
         p = Path(f'data/{fname}')
@@ -409,7 +454,7 @@ def build_message():
             lines.append(f"{title} 失败: {e}")
             lines.append("")
 
-    # === OKX 爆仓 ===
+    # === OKX 爆仓（加"仅 OKX"标注） ===
     p = Path('data/okx_liquidation.csv')
     if p.exists():
         try:
@@ -418,7 +463,7 @@ def build_message():
             latest = df['dt'].max()
             recent = df[df['dt'] >= latest - pd.Timedelta(hours=24)]
             if not recent.empty:
-                lines.append("💥 OKX 爆仓（最近 24h）")
+                lines.append("💥 爆仓（最近 24h, 仅 OKX ≈5-10% 市场）")
                 for uly in recent['uly'].unique():
                     sub = recent[recent['uly'] == uly].copy()
                     cs = 0.01 if 'BTC' in uly else 0.1
@@ -502,8 +547,9 @@ def build_message():
             lines.append(f"🏛️ CME 失败: {e}")
             lines.append("")
 
-    # === Farside ETF ===
-    for fname, title in [('farside_btc_etf.csv', '📈 BTC ETF'), ('farside_eth_etf.csv', '📈 ETH ETF')]:
+    # === Farside ETF（加 5d 滚动） ===
+    for fname, title in [('farside_btc_etf.csv', '📈 BTC ETF'),
+                          ('farside_eth_etf.csv', '📈 ETH ETF')]:
         p = Path(f'data/{fname}')
         if not p.exists():
             continue
@@ -512,14 +558,40 @@ def build_message():
             mask = df.iloc[:, 0].astype(str).str.match(r'\d{2} \w{3} \d{4}')
             df = df[mask]
             total_col = pd.to_numeric(df.iloc[:, -2], errors='coerce')
-            df2 = df[total_col.notna() & (total_col != 0)]
-            if not df2.empty:
-                last = df2.iloc[-1]
+            valid = df[total_col.notna()].copy()
+            valid['total'] = total_col[total_col.notna()].values
+            if not valid.empty:
+                last = valid.iloc[-1]
                 lines.append(f"{title} 净流")
-                lines.append(f"  {last.iloc[0]}: US${last.iloc[-2]}m")
+                lines.append(f"  {last.iloc[0]}: US${last['total']}m")
+                # 5d 滚动
+                if len(valid) >= 5:
+                    sum5 = valid['total'].tail(5).sum()
+                    lines.append(f"  5d 滚动: US${sum5:+.1f}m")
                 lines.append("")
         except Exception as e:
             lines.append(f"{title} 失败: {e}")
+            lines.append("")
+
+    # === IMF 外储/黄金 ===
+    p = Path('data/imf_reserves.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            if not df.empty:
+                latest = df['date'].max()
+                df = df[df['date'] == latest].sort_values('series')
+                lines.append(f"🌏 新兴市场外储 ({latest}, IMF)")
+                for _, r in df.iterrows():
+                    sid = str(r['series']).replace('RESERVES_', '')
+                    v = float(r['value'])
+                    if v > 1e9:
+                        lines.append(f"  {sid}: ${v/1e9:.1f}B")
+                    else:
+                        lines.append(f"  {sid}: {v:.2f}")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"🌏 IMF 失败: {e}")
             lines.append("")
 
     # === 时间戳 ===
