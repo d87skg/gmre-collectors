@@ -1,5 +1,5 @@
 """
-CFTC 金融期货 COT（含日元）
+CFTC FX COT（日元 / 英镑 / 瑞郎 / 欧元）
 来源: https://www.cftc.gov/dea/newcot/FinFutWk.txt
 """
 import requests
@@ -15,9 +15,18 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                   'AppleWebKit/537.36 (KHTML, like Gecko) '
                   'Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Referer': 'https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-User': '?1',
 }
 
-# 汇率期货
 TARGETS = {
     'JAPANESE YEN': 'COT_JPY',
     'EURO FX':      'COT_EUR',
@@ -81,8 +90,6 @@ def main():
     df = df.sort_values(['date', 'series_id'])
     df.to_csv(OUT, index=False)
     print(f'已保存: {OUT} ({len(df)} 行)')
-    for _, r in df_new.iterrows():
-        print(f"  {r['series_id']}: {r['market_name'][:40]} (OI={r['open_interest']})")
 
 
 if __name__ == '__main__':

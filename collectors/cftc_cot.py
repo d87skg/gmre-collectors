@@ -1,15 +1,7 @@
 """
-CFTC COT 周度持仓报告
+CFTC COT 金融期货
 来源: https://www.cftc.gov/dea/newcot/FinFutWk.txt
 输出: data/cftc_cot.csv
-
-字段位置（短格式，逗号分隔）：
-  [0] Market name (带引号)
-  [2] Report date (YYYY-MM-DD)
-  [7] Open Interest
-  [8] NonComm Long
-  [9] NonComm Short
-  [10] NonComm Spread
 """
 import requests
 import pandas as pd
@@ -24,9 +16,18 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                   'AppleWebKit/537.36 (KHTML, like Gecko) '
                   'Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Referer': 'https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-User': '?1',
 }
 
-# 关键词 -> series_id（用 in 匹配，容忍后缀）
 TARGETS = {
     'UST 10Y NOTE': 'COT_UST10Y',
     'UST BOND':     'COT_UST30Y',
@@ -36,6 +37,7 @@ TARGETS = {
     'EURO FX':      'COT_EUR',
     'BITCOIN':      'COT_BTC_CME',
 }
+
 
 def fetch():
     r = requests.get(URL, headers=HEADERS, timeout=30)
@@ -52,22 +54,16 @@ def fetch():
             continue
         name = parts[0].strip().strip('"').strip()
         for keyword, series_id in TARGETS.items():
-            # 用 startswith 前缀匹配，避免 "UST BOND" 命中 "ULTRA UST BOND"
             if name.startswith(keyword + ' -') or name == keyword:
                 try:
-                    date_str = parts[2].strip()
-                    oi = int(parts[7])
-                    nc_long = int(parts[8])
-                    nc_short = int(parts[9])
-                    net = nc_long - nc_short
                     records.append({
-                        'date': date_str,
+                        'date': parts[2].strip(),
                         'series_id': series_id,
                         'market_name': name,
-                        'open_interest': oi,
-                        'nc_long': nc_long,
-                        'nc_short': nc_short,
-                        'net_noncommercial': net,
+                        'open_interest': int(parts[7]),
+                        'nc_long': int(parts[8]),
+                        'nc_short': int(parts[9]),
+                        'net_noncommercial': int(parts[8]) - int(parts[9]),
                     })
                 except Exception as e:
                     print(f'解析失败: {name[:40]} - {e}')
@@ -83,18 +79,12 @@ def main():
         sys.exit(1)
 
     df_new = pd.DataFrame(recs)
-
-    # 去重：同 series_id 只保留 open_interest 最大的（主合约）
     df_new = (df_new.sort_values('open_interest', ascending=False)
                     .drop_duplicates(subset=['series_id'], keep='first'))
     print(f'去重后 {len(df_new)} 条')
-    for _, row in df_new.iterrows():
-        print(f"  {row['series_id']}: {row['market_name'][:40]} (OI={row['open_interest']})")
-
     df_new['retrieved_at'] = datetime.utcnow().isoformat()
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-
     if OUT.exists():
         df_old = pd.read_csv(OUT)
         df = pd.concat([df_old, df_new]).drop_duplicates(

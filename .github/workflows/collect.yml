@@ -53,7 +53,7 @@ jobs:
           python collectors/coingecko_stablecoins.py || echo "CG stables failed"
           python collectors/coingecko_exchange_vol.py || echo "CG exvol failed"
           python collectors/coingecko_derivatives.py || echo "CG deriv failed"
-          python collectors/imf_reserves.py || echo "IMF failed"
+          python collectors/worldbank_reserves.py || echo "WorldBank failed"
 
       - name: List data
         run: ls -la data/

@@ -237,6 +237,7 @@ def build_message():
             df = pd.read_csv(p).sort_values('date')
             latest = df['date'].max()
             df = df[df['date'] == latest]
+            df = df.sort_values(['index', 'open_interest_usd'], ascending=[True, False])
             lines.append(f"📊 多交易所衍生品 ({latest}, CoinGecko)")
             for _, r in df.iterrows():
                 mkt = str(r['market']).replace(' (Futures)', '')
@@ -570,25 +571,25 @@ def build_message():
             lines.append(f"{title} 失败: {e}")
             lines.append("")
 
-    # === IMF 外储 ===
-    p = Path('data/imf_reserves.csv')
+        # === World Bank 外储 ===
+    p = Path('data/worldbank_reserves.csv')
     if p.exists():
         try:
             df = pd.read_csv(p)
             if not df.empty:
                 latest = df['date'].max()
                 df = df[df['date'] == latest].sort_values('series')
-                lines.append(f"🌏 新兴市场外储 ({latest}, IMF)")
+                lines.append(f"🌏 新兴市场外储 ({latest}, World Bank)")
                 for _, r in df.iterrows():
                     sid = str(r['series']).replace('RESERVES_', '')
                     v = float(r['value'])
-                    if v > 1e9:
-                        lines.append(f"  {sid}: ${v/1e9:.1f}B")
+                    if v > 100:
+                        lines.append(f"  {sid}: ${v:.0f}B")
                     else:
-                        lines.append(f"  {sid}: {v:.2f}")
+                        lines.append(f"  {sid}: ${v:.2f}B")
                 lines.append("")
         except Exception as e:
-            lines.append(f"🌏 IMF 失败: {e}")
+            lines.append(f"🌏 WorldBank 失败: {e}")
             lines.append("")
 
     # === 时间戳 ===
