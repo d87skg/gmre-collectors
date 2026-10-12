@@ -28,8 +28,7 @@ jobs:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: |
           mkdir -p data/
-          python collectors/cftc_cot.py || echo "CFTC failed"
-          python collectors/cftc_fx.py || echo "CFTC FX failed"
+          python collectors/cftc_socrata.py || echo "CFTC failed"
           python collectors/bis_cbpol.py || echo "BIS failed"
           python collectors/ecb_rates.py || echo "ECB failed"
           python collectors/eurostat_hicp.py || echo "Eurostat failed"
