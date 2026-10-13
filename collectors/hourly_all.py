@@ -8,9 +8,10 @@ HERE = Path(__file__).parent
 ROOT = HERE.parent
 
 collectors = [
+    "okx_liquidation.py",
     "binance_funding.py",
     "binance_oi.py",
-    "okx_liquidation.py",
+    "bybit_perp.py",
 ]
 
 failed = []
