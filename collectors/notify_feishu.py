@@ -1,9 +1,7 @@
 """
-飞书机器人通知（v11，2026-10-15）
-- CFTC 改 Socrata
-- Hyperliquid 链上（标记价 + OI + FR）
-- Hyperliquid 清算（链上真实）
-- World Bank 外储
+飞书机器人通知（v11.1，2026-10-15）
+- 删掉不可靠的 CoinGecko TOTAL_VOLUME
+- 其余同 v11
 """
 import os
 import sys
@@ -166,7 +164,7 @@ def build_message():
             lines.append(f"🇯🇵 BOJ 解析失败: {e}")
             lines.append("")
 
-        # === CoinGecko 全市场 ===
+    # === CoinGecko 全市场 ===
     p = Path('data/coingecko_global.csv')
     if p.exists():
         try:
@@ -177,18 +175,16 @@ def build_message():
             for _, r in df.iterrows():
                 sid = str(r['series'])
                 v = float(r['value'])
-                                if 'MCAP_USD_B' in sid:
+                if sid == 'TOTAL_MCAP_USD_B':
                     lines.append(f"  TOTAL_MCAP: ${v:,.0f}B")
-                elif 'VOLUME_USD_B' in sid:
-                    lines.append(f"  TOTAL_VOLUME: ${v:,.1f}B")
                 elif sid == 'TOTAL_MCAP_USD':
                     lines.append(f"  TOTAL_MCAP: ${v/1e9:,.0f}B")
-                elif sid == 'TOTAL_VOLUME_USD':
-                    lines.append(f"  TOTAL_VOLUME: ${v/1e9:,.1f}B")
-                elif 'DOMINANCE' in sid:
-                    lines.append(f"  {sid.replace('_DOMINANCE', '')} 市占率: {v:.2f}%")
-                else:
-                    lines.append(f"  {sid}: {v:.0f}")
+                elif sid == 'BTC_DOMINANCE':
+                    lines.append(f"  BTC 市占率: {v:.2f}%")
+                elif sid == 'ETH_DOMINANCE':
+                    lines.append(f"  ETH 市占率: {v:.2f}%")
+                elif sid == 'ACTIVE_CRYPTOS':
+                    lines.append(f"  ACTIVE_CRYPTOS: {v:.0f}")
             lines.append("")
         except Exception as e:
             lines.append(f"🌐 全市场失败: {e}")
@@ -289,7 +285,6 @@ def build_message():
             for _, r in df.iterrows():
                 sym = str(r['symbol'])
                 mid = float(r['mid_px'])
-                mark = float(r['mark_px']) if pd.notna(r.get('mark_px')) else None
                 fr = float(r['funding_rate']) if pd.notna(r.get('funding_rate')) else None
                 oi = float(r['open_interest']) if pd.notna(r.get('open_interest')) else None
                 fr_str = f"{fr*100*24*365:+.2f}% 年化" if fr is not None else "N/A"
@@ -626,7 +621,7 @@ def build_message():
             if not df.empty:
                 latest = df['date'].max()
                 df = df[df['date'] == latest].sort_values('series')
-                                lines.append(f"🌏 新兴市场外储 ({latest}, World Bank, 年度)")
+                lines.append(f"🌏 新兴市场外储 ({latest}, World Bank, 年度)")
                 seen = set()
                 for _, r in df.iterrows():
                     sid = str(r['series']).replace('RESERVES_', '')
