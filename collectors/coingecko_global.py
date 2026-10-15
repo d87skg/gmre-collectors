@@ -1,8 +1,8 @@
 """
 CoinGecko 全市场宏观快照
-- 总市值
+- 总市值（USD）
+- 总成交量（USD）
 - BTC/ETH 市占率
-- 24h 总成交量
 API: https://api.coingecko.com/api/v3/global
 无需 key
 """
@@ -27,12 +27,15 @@ def main():
 
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     mcap_pct = data.get('market_cap_percentage', {})
+    total_mcap = data.get('total_market_cap', {}).get('usd')
+    total_vol = data.get('total_volume', {}).get('usd')
 
-    rows = [
-        {'date': today, 'series': 'TOTAL_MCAP_USD',
-         'value': data.get('total_market_cap', {}).get('usd')},
-        {'date': today, 'series': 'TOTAL_VOLUME_USD',
-         'value': data.get('total_volume', {}).get('usd')},
+    # 统一转成"以 B 为单位"存储（便于显示，不受量级影响）
+        rows = [
+        {'date': today, 'series': 'TOTAL_MCAP_USD_B',
+         'value': total_mcap / 1e9 if total_mcap else None},
+        {'date': today, 'series': 'TOTAL_VOLUME_USD_B',
+         'value': total_vol / 1e9 if total_vol else None},
         {'date': today, 'series': 'BTC_DOMINANCE',
          'value': mcap_pct.get('btc')},
         {'date': today, 'series': 'ETH_DOMINANCE',
@@ -45,8 +48,10 @@ def main():
     print(f'拿到 {len(rows)} 条:')
     for r in rows:
         v = r['value']
-        if 'USD' in r['series']:
-            print(f"  {r['series']}: ${v/1e12:.2f}T")
+        if 'MCAP' in r['series']:
+            print(f"  {r['series']}: ${v:,.0f}B")
+        elif 'VOLUME' in r['series']:
+            print(f"  {r['series']}: ${v:,.1f}B")
         elif 'DOMINANCE' in r['series']:
             print(f"  {r['series']}: {v:.2f}%")
         else:

@@ -12,7 +12,6 @@ from pathlib import Path
 
 OUT = Path('data/worldbank_reserves.csv')
 
-# ISO-3 代码
 COUNTRIES = {
     'IND': 'India',
     'BRA': 'Brazil',
@@ -26,13 +25,12 @@ INDICATOR = 'FI.RES.TOTL.CD'
 
 
 def fetch_all():
-    """一次性拉所有国家"""
     codes = ';'.join(COUNTRIES.keys())
     url = f'https://api.worldbank.org/v2/country/{codes}/indicator/{INDICATOR}'
     params = {
         'format': 'json',
         'per_page': 500,
-        'mrv': 5,  # 最近 5 年
+        'mrv': 5,
     }
     r = requests.get(url, params=params, timeout=30)
     if r.status_code != 200:
@@ -52,7 +50,7 @@ def fetch_all():
         rows.append({
             'date': d,
             'series': f'RESERVES_{iso3}',
-            'value': float(v) / 1e9,  # $B
+            'value': float(v) / 1e9,
         })
     return rows
 
@@ -78,13 +76,13 @@ def main():
 
     if OUT.exists():
         df_old = pd.read_csv(OUT)
-        df = pd.concat([df_old, df_new]).drop_duplicates(
-            subset=['date', 'series'], keep='last'
-        )
+        df = pd.concat([df_old, df_new])
     else:
         df = df_new
 
-    df = df.sort_values(['date', 'series'])
+    # 最终去重
+    df = (df.drop_duplicates(subset=['date', 'series'], keep='last')
+            .sort_values(['date', 'series']))
     df.to_csv(OUT, index=False)
     print(f'已保存: {OUT} ({len(df)} 行)')
 

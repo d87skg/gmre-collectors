@@ -1,11 +1,9 @@
 """
-飞书机器人通知（v10，2026-10-11）
-- Funding 标注"永续"
-- 爆仓标注"仅 OKX ≈5-10% 市场"
-- CoinGecko 衍生品 FR 跨所差异
-- ETF 5d 滚动净流
-- CFTC COT z-score（滚动 52 周）
-- IMF 新兴市场外储
+飞书机器人通知（v11，2026-10-15）
+- CFTC 改 Socrata
+- Hyperliquid 链上（标记价 + OI + FR）
+- Hyperliquid 清算（链上真实）
+- World Bank 外储
 """
 import os
 import sys
@@ -168,7 +166,7 @@ def build_message():
             lines.append(f"🇯🇵 BOJ 解析失败: {e}")
             lines.append("")
 
-    # === CoinGecko 全市场 ===
+        # === CoinGecko 全市场 ===
     p = Path('data/coingecko_global.csv')
     if p.exists():
         try:
@@ -179,14 +177,14 @@ def build_message():
             for _, r in df.iterrows():
                 sid = str(r['series'])
                 v = float(r['value'])
-                if 'USD' in sid:
-                    if v >= 1e12:
-                        val_str = f"${v/1e12:.2f}T"
-                    elif v >= 1e9:
-                        val_str = f"${v/1e9:.1f}B"
-                    else:
-                        val_str = f"${v:.0f}"
-                    lines.append(f"  {sid.replace('_USD', '')}: {val_str}")
+                                if 'MCAP_USD_B' in sid:
+                    lines.append(f"  TOTAL_MCAP: ${v:,.0f}B")
+                elif 'VOLUME_USD_B' in sid:
+                    lines.append(f"  TOTAL_VOLUME: ${v:,.1f}B")
+                elif sid == 'TOTAL_MCAP_USD':
+                    lines.append(f"  TOTAL_MCAP: ${v/1e9:,.0f}B")
+                elif sid == 'TOTAL_VOLUME_USD':
+                    lines.append(f"  TOTAL_VOLUME: ${v/1e9:,.1f}B")
                 elif 'DOMINANCE' in sid:
                     lines.append(f"  {sid.replace('_DOMINANCE', '')} 市占率: {v:.2f}%")
                 else:
@@ -279,8 +277,8 @@ def build_message():
         except Exception as e:
             lines.append(f"📈 Yahoo 失败: {e}")
             lines.append("")
-    
-        # === Hyperliquid 链上衍生品 ===
+
+    # === Hyperliquid 链上 ===
     p = Path('data/hyperliquid.csv')
     if p.exists():
         try:
@@ -302,6 +300,32 @@ def build_message():
             lines.append(f"⛓️ Hyperliquid 失败: {e}")
             lines.append("")
 
+    # === Hyperliquid 清算 ===
+    p = Path('data/hyperliquid_liquidation.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            df['dt'] = pd.to_datetime(df['datetime'], utc=True)
+            latest = df['dt'].max()
+            recent = df[df['dt'] >= latest - pd.Timedelta(hours=24)]
+            lines.append(f"⚡ Hyperliquid 清算 (最近 24h, 链上真实)")
+            if recent.empty:
+                lines.append(f"  过去 24h 无清算事件（市场平静）")
+            else:
+                total_usd = recent['notional_usd'].sum() / 1e6
+                lines.append(f"  总额: ${total_usd:.2f}M ({len(recent)} 事件)")
+                for coin in recent['coin'].unique():
+                    sub = recent[recent['coin'] == coin]
+                    long_liq = sub[sub['side'] == 'A']['notional_usd'].sum() / 1e6
+                    short_liq = sub[sub['side'] == 'B']['notional_usd'].sum() / 1e6
+                    lines.append(f"  {coin}: 多爆 ${long_liq:.2f}M / 空爆 ${short_liq:.2f}M")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"⚡ Hyperliquid 清算失败: {e}")
+            lines.append("")
+    else:
+        lines.append("⚡ Hyperliquid 清算 (首次采集，无历史)")
+        lines.append("")
 
     # === 流动性 ===
     p_nyfed = Path('data/nyfed_rates.csv')
@@ -594,7 +618,7 @@ def build_message():
             lines.append(f"{title} 失败: {e}")
             lines.append("")
 
-        # === World Bank 外储 ===
+    # === World Bank 外储 ===
     p = Path('data/worldbank_reserves.csv')
     if p.exists():
         try:
@@ -602,9 +626,13 @@ def build_message():
             if not df.empty:
                 latest = df['date'].max()
                 df = df[df['date'] == latest].sort_values('series')
-                lines.append(f"🌏 新兴市场外储 ({latest}, World Bank, 年度)")
+                                lines.append(f"🌏 新兴市场外储 ({latest}, World Bank, 年度)")
+                seen = set()
                 for _, r in df.iterrows():
                     sid = str(r['series']).replace('RESERVES_', '')
+                    if sid in seen:
+                        continue
+                    seen.add(sid)
                     v = float(r['value'])
                     if v > 100:
                         lines.append(f"  {sid}: ${v:.0f}B")
@@ -632,7 +660,6 @@ def send(content):
         "msg_type": "text",
         "content": {"text": content}
     }
-    # 重试 3 次，每次 60 秒超时
     last_err = None
     for attempt in range(3):
         try:

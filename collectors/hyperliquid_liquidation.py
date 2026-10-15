@@ -1,8 +1,12 @@
-# -*- coding: utf-8 -*-
-"""hyperliquid_liquidation.py - Hyperliquid 链上清算流（含主动心跳）"""
+"""
+Hyperliquid 链上真实清算事件（WebSocket liquidationFills）
+无 IP 封锁，Actions 可直连
+输出: data/hyperliquid_liquidation.csv（累积）
+"""
 import asyncio
 import json
 import argparse
+import pandas as pd
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -12,13 +16,12 @@ except ImportError:
     print("[error] pip install websockets")
     raise
 
-DATA_DIR = Path(__file__).parent.parent / "data" / "lti"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+OUT = Path(__file__).parent.parent / "data" / "hyperliquid_liquidation.csv"
 WS_URL = "wss://api.hyperliquid.xyz/ws"
+TARGET_COINS = {"BTC", "ETH", "SOL"}
 
 
 async def keepalive(ws):
-    """每 30 秒发一次 ping 保持连接"""
     while True:
         try:
             await asyncio.sleep(30)
@@ -27,95 +30,84 @@ async def keepalive(ws):
             return
 
 
-async def collect_once(duration, events, t_start):
-    async with websockets.connect(WS_URL, ping_interval=None) as ws:
-        # 订阅
-        await ws.send(json.dumps({
-            "method": "subscribe",
-            "subscription": {"type": "liquidationFills"}
-        }))
-        print(f"[ok] 已连接并订阅")
-
-        # 启动心跳
-        ping_task = asyncio.create_task(keepalive(ws))
-
-        try:
-            while asyncio.get_event_loop().time() - t_start < duration:
-                try:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=10.0)
-                    data = json.loads(msg)
-                    if data.get("channel") == "liquidationFills":
-                        for event in data.get("data", []):
-                            row = {
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                                "coin": event.get("coin"),
-                                "side": event.get("side"),
-                                "price": event.get("px"),
-                                "size": event.get("sz"),
-                                "notional_usd": float(event.get("px", 0)) * float(event.get("sz", 0)),
-                                "user": event.get("user"),
-                                "source": "hyperliquid_liquidationFills",
-                                "data_type": "observed",
-                            }
-                            events.append(row)
-                            print(f"[liq] {row['coin']:6s} {row['side']:6s} "
-                                  f"${row['notional_usd']:>12,.2f} @ {row['price']}")
-                except asyncio.TimeoutError:
-                    elapsed = int(asyncio.get_event_loop().time() - t_start)
-                    print(f"[{elapsed:3d}s] (心跳)")
-                    continue
-                except websockets.exceptions.ConnectionClosed:
-                    print(f"[reconnect] 连接断开")
-                    return False
-        finally:
-            ping_task.cancel()
-
-    return True
-
-
-async def subscribe(duration):
+async def collect(duration):
     events = []
     t_start = asyncio.get_event_loop().time()
-    retry_count = 0
 
-    print(f"[start] 目标采集 {duration}s")
-    print("-" * 60)
+    try:
+        async with websockets.connect(WS_URL, ping_interval=None) as ws:
+            await ws.send(json.dumps({
+                "method": "subscribe",
+                "subscription": {"type": "liquidationFills"}
+            }))
+            print("[ok] connected + subscribed")
 
-    while asyncio.get_event_loop().time() - t_start < duration:
-        try:
-            if await collect_once(duration, events, t_start):
-                break
-        except Exception as e:
-            print(f"[error] {e}")
-        retry_count += 1
-        if retry_count > 20:
-            break
-        await asyncio.sleep(2)
+            ping_task = asyncio.create_task(keepalive(ws))
+
+            try:
+                while asyncio.get_event_loop().time() - t_start < duration:
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                        data = json.loads(msg)
+                        if data.get("channel") == "liquidationFills":
+                            for ev in data.get("data", []):
+                                coin = ev.get("coin")
+                                if coin not in TARGET_COINS:
+                                    continue
+                                px = float(ev.get("px", 0))
+                                sz = float(ev.get("sz", 0))
+                                events.append({
+                                    "datetime": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                                    "coin": coin,
+                                    "side": ev.get("side"),  # 'A' = ask (long liq), 'B' = bid (short liq)
+                                    "price": px,
+                                    "size": sz,
+                                    "notional_usd": px * sz,
+                                })
+                                print(f"[liq] {coin:5s} {ev.get('side'):3s} ${px*sz:>12,.2f} @ {px}")
+                    except asyncio.TimeoutError:
+                        elapsed = int(asyncio.get_event_loop().time() - t_start)
+                        print(f"[{elapsed:3d}s] (no event)")
+                        continue
+            finally:
+                ping_task.cancel()
+    except Exception as e:
+        print(f"[error] {e}")
 
     return events
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--duration", type=int, default=60)
+    parser.add_argument("--duration", type=int, default=90)
     args = parser.parse_args()
 
-    events = asyncio.run(subscribe(args.duration))
+    print(f"[start] 采集 {args.duration}s")
+    events = asyncio.run(collect(args.duration))
 
-    print(f"\n{'='*60}")
-    if events:
-        import pandas as pd
-        df = pd.DataFrame(events)
-        out = DATA_DIR / "hyperliquid_liquidation.csv"
-        df.to_csv(out, index=False)
-        print(f"[saved] {out} ({len(events)} events)")
-        print(f"[summary] 总清算额: ${df['notional_usd'].sum():,.2f}")
-        for coin in df['coin'].unique():
-            sub = df[df['coin'] == coin]
-            print(f"  {coin}: {len(sub)} 事件, ${sub['notional_usd'].sum():,.2f}")
+    if not events:
+        print("[note] 采集期间无清算事件")
+        return
+
+    df_new = pd.DataFrame(events)
+    df_new['retrieved_at'] = datetime.utcnow().isoformat()
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+
+    if OUT.exists():
+        df_old = pd.read_csv(OUT)
+        df = pd.concat([df_old, df_new]).drop_duplicates(
+            subset=['datetime', 'coin', 'side', 'price', 'size'], keep='last'
+        )
     else:
-        print(f"[note] 采集期间无清算事件")
-    print(f"{'='*60}")
+        df = df_new
+
+    df = df.sort_values('datetime')
+    df.to_csv(OUT, index=False)
+    print(f"[saved] {OUT} ({len(df)} 总行 / 本次 +{len(events)})")
+    print(f"[summary] 本次总额 ${df_new['notional_usd'].sum():,.2f}")
+    for coin in df_new['coin'].unique():
+        sub = df_new[df_new['coin'] == coin]
+        print(f"  {coin}: {len(sub)} 事件, ${sub['notional_usd'].sum():,.2f}")
 
 
 if __name__ == "__main__":
