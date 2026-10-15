@@ -279,6 +279,29 @@ def build_message():
         except Exception as e:
             lines.append(f"📈 Yahoo 失败: {e}")
             lines.append("")
+    
+        # === Hyperliquid 链上衍生品 ===
+    p = Path('data/hyperliquid.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p).sort_values('datetime')
+            latest_dt = df['datetime'].max()
+            df = df[df['datetime'] == latest_dt]
+            lines.append(f"⛓️ Hyperliquid 链上 ({latest_dt} UTC)")
+            for _, r in df.iterrows():
+                sym = str(r['symbol'])
+                mid = float(r['mid_px'])
+                mark = float(r['mark_px']) if pd.notna(r.get('mark_px')) else None
+                fr = float(r['funding_rate']) if pd.notna(r.get('funding_rate')) else None
+                oi = float(r['open_interest']) if pd.notna(r.get('open_interest')) else None
+                fr_str = f"{fr*100*24*365:+.2f}% 年化" if fr is not None else "N/A"
+                oi_str = f"${oi * mid / 1e9:.2f}B" if oi else "N/A"
+                lines.append(f"  {sym}: mid=${mid:,.2f} | FR {fr_str} | OI {oi_str}")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"⛓️ Hyperliquid 失败: {e}")
+            lines.append("")
+
 
     # === 流动性 ===
     p_nyfed = Path('data/nyfed_rates.csv')
@@ -579,7 +602,7 @@ def build_message():
             if not df.empty:
                 latest = df['date'].max()
                 df = df[df['date'] == latest].sort_values('series')
-                lines.append(f"🌏 新兴市场外储 ({latest}, World Bank)")
+                lines.append(f"🌏 新兴市场外储 ({latest}, World Bank, 年度)")
                 for _, r in df.iterrows():
                     sid = str(r['series']).replace('RESERVES_', '')
                     v = float(r['value'])
