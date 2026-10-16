@@ -21,6 +21,7 @@ SYMBOLS = {
     'CL=F':      'OIL',
     '^NDX':      'NDX',
     'TLT':       'TLT',
+    'HG=F':      'COPPER',
 }
 
 

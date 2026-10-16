@@ -61,6 +61,15 @@ SERIES = [
     'BAMLC0A4CBBB',
     'T10Y3M',
     'DRTSCILM',
+        # === 通胀（实际） ===
+    'CPIAUCSL',
+    'CPILFESL',
+    'PCEPI',
+    'PCEPILFE',
+    # === 就业 ===
+    'PAYEMS',
+    'UNRATE',
+    'ICSA',
 ]
 
 

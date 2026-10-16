@@ -1,7 +1,9 @@
 """
-飞书机器人通知（v11.1，2026-10-15）
-- 删掉不可靠的 CoinGecko TOTAL_VOLUME
-- 其余同 v11
+飞书机器人通知（v12，2026-10-16）
+- FRED 段：新增 CPI/PCE 同比 + 失业率/非农/初请
+- 市场指标：新增金铜比
+- FR 跨所差异：纳入 Hyperliquid
+- 稳定币细分：USDE 锚定监控
 """
 import os
 import sys
@@ -124,7 +126,7 @@ def build_message():
             df = pd.read_csv(p).sort_values('date')
             if not df.empty:
                 latest = df.iloc[-1]
-                lines.append(f"🇪🇺 欧元区 HICP ({latest['date']}, Eurostat)")
+                lines.append(f"🇪🇺 欧元区 HICP ({latest['date']}, Eurostat, 月度)")
                 lines.append(f"  CPI 年率: {float(latest['value']):.1f}%")
                 lines.append("")
         except Exception as e:
@@ -201,7 +203,12 @@ def build_message():
             for _, r in df.iterrows():
                 sym = str(r['symbol'])
                 mc = float(r['market_cap_usd']) / 1e9
-                lines.append(f"  {sym}: ${mc:.2f}B")
+                price = r.get('current_price')
+                if pd.notna(price) and abs(float(price) - 1.0) > 0.001:
+                    dev = (float(price) - 1.0) * 100
+                    lines.append(f"  {sym}: ${mc:.2f}B ⚠️ 锚定 {dev:+.2f}%")
+                else:
+                    lines.append(f"  {sym}: ${mc:.2f}B")
             lines.append("")
         except Exception as e:
             lines.append(f"🪙 稳定币细分失败: {e}")
@@ -240,13 +247,30 @@ def build_message():
                 oi = float(r['open_interest_usd']) / 1e9
                 fr_str = f"{fr:+.1f}%" if pd.notna(fr) else "N/A"
                 lines.append(f"  {mkt:10s} {idx}: FR {fr_str}, OI ${oi:.2f}B")
+
+            # 读取 HL FR
+            hl_frs = {}
+            hl_p = Path('data/hyperliquid.csv')
+            if hl_p.exists():
+                try:
+                    hl_df = pd.read_csv(hl_p).sort_values('datetime')
+                    hl_latest = hl_df['datetime'].max()
+                    hl_df = hl_df[hl_df['datetime'] == hl_latest]
+                    for _, r in hl_df.iterrows():
+                        hl_frs[str(r['symbol'])] = float(r['funding_rate']) * 100 * 24 * 365
+                except Exception:
+                    pass
+
             for idx in ['BTC', 'ETH']:
                 sub = df[df['index'] == idx]
-                frs = sub['funding_rate_annual_pct'].dropna()
+                frs = list(sub['funding_rate_annual_pct'].dropna())
+                if idx in hl_frs:
+                    frs.append(hl_frs[idx])
                 if len(frs) >= 2:
-                    diff = frs.max() - frs.min()
+                    diff = max(frs) - min(frs)
                     if abs(diff) > 5:
-                        lines.append(f"  ⚠️ {idx} FR 跨所差异 {diff:.1f}%")
+                        hl_mark = ' (含 HL)' if idx in hl_frs else ''
+                        lines.append(f"  ⚠️ {idx} FR 跨所差异 {diff:.1f}%{hl_mark}")
             lines.append("")
         except Exception as e:
             lines.append(f"📊 CG 衍生品失败: {e}")
@@ -263,12 +287,21 @@ def build_message():
             for _, r in df.iterrows():
                 sym = str(r['symbol'])
                 v = float(r['value'])
-                if sym in ('GOLD', 'OIL'):
+                if sym in ('GOLD', 'OIL', 'COPPER'):
                     lines.append(f"  {sym}: ${v:,.2f}")
                 elif sym == 'NDX':
                     lines.append(f"  {sym}: {v:,.1f}")
                 else:
                     lines.append(f"  {sym}: {v:.2f}")
+
+            # 金铜比
+            gold_row = df[df['symbol'] == 'GOLD']
+            copper_row = df[df['symbol'] == 'COPPER']
+            if not gold_row.empty and not copper_row.empty:
+                g = float(gold_row.iloc[0]['value'])
+                c = float(copper_row.iloc[0]['value'])
+                if c > 0:
+                    lines.append(f"  金铜比: {g/c:.0f}")
             lines.append("")
         except Exception as e:
             lines.append(f"📈 Yahoo 失败: {e}")
@@ -370,10 +403,47 @@ def build_message():
                     return None, None
                 return float(sub.iloc[-1]['value']), sub.iloc[-1]['date']
 
+            def yoy(sid):
+                sub = df[df['series'] == sid].sort_values('date')
+                if len(sub) < 13:
+                    return None, None
+                cur = float(sub.iloc[-1]['value'])
+                prev = float(sub.iloc[-13]['value'])
+                if prev and prev > 0:
+                    return (cur / prev - 1) * 100, sub.iloc[-1]['date']
+                return None, None
+
             v, d = la('WRESBAL')
             if v is not None:
                 lines.append(f"  准备金: ${v/1e6:.2f}T ({d})")
 
+            # 通胀（同比）
+            v, d = yoy('CPIAUCSL')
+            if v is not None:
+                lines.append(f"  CPI 同比: {v:.2f}% ({d})")
+            v, _ = yoy('CPILFESL')
+            if v is not None:
+                lines.append(f"  核心 CPI 同比: {v:.2f}%")
+            v, _ = yoy('PCEPI')
+            if v is not None:
+                lines.append(f"  PCE 同比: {v:.2f}%")
+            v, _ = yoy('PCEPILFE')
+            if v is not None:
+                lines.append(f"  核心 PCE 同比: {v:.2f}%")
+
+            # 就业
+            v, d = la('UNRATE')
+            if v is not None:
+                lines.append(f"  失业率: {v:.1f}% ({d})")
+            sub = df[df['series'] == 'PAYEMS'].sort_values('date')
+            if len(sub) >= 2:
+                diff = float(sub.iloc[-1]['value']) - float(sub.iloc[-2]['value'])
+                lines.append(f"  非农: {diff:+,.0f}K ({sub.iloc[-1]['date']})")
+            v, d = la('ICSA')
+            if v is not None:
+                lines.append(f"  初请: {v:,.0f} ({d})")
+
+            # 收益率曲线
             t2, _ = la('DGS2')
             t10, _ = la('DGS10')
             t30, _ = la('DGS30')
@@ -390,6 +460,7 @@ def build_message():
             if v is not None:
                 lines.append(f"  10Y-3M: {v*100:+.0f}bp")
 
+            # 真实利率 + Breakeven
             v, _ = la('DFII10')
             if v is not None:
                 lines.append(f"  10Y TIPS: {v:.2f}%")
@@ -400,6 +471,7 @@ def build_message():
             if v is not None:
                 lines.append(f"  10Y Breakeven: {v:.2f}%")
 
+            # 信用利差（整体 + 分层）
             v, _ = la('BAMLH0A0HYM2')
             if v is not None:
                 lines.append(f"  HY OAS: {v*100:.0f}bp")

@@ -1,5 +1,5 @@
 """
-CoinGecko 稳定币细分（逐个币种供应量）
+CoinGecko 稳定币细分（逐个币种供应量 + 锚定监控）
 API: https://api.coingecko.com/api/v3/coins/markets?category=stablecoins
 无需 key
 """
@@ -44,12 +44,15 @@ def main():
             'market_cap_usd': coin.get('market_cap'),
             'circulating_supply': coin.get('circulating_supply'),
             'total_supply': coin.get('total_supply'),
+            'current_price': coin.get('current_price'),
         })
 
     print(f'拿到 {len(rows)} 条:')
     for r in rows:
         mc = r['market_cap_usd'] / 1e9 if r['market_cap_usd'] else 0
-        print(f"  {r['symbol']:8s} ${mc:.2f}B")
+        price = r.get('current_price', 1.0)
+        dev = (price - 1.0) * 100 if price else 0
+        print(f"  {r['symbol']:8s} ${mc:.2f}B (锚定 {dev:+.4f}%)")
 
     if not rows:
         print('❌ 无数据')
