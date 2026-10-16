@@ -73,7 +73,7 @@ SERIES = [
 ]
 
 
-def fetch(series_id, days=400, retries=3):
+def fetch(series_id, days=500, retries=3):
     start = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
     params = {
         'series_id': series_id,
