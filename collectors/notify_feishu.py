@@ -1,9 +1,7 @@
 """
-飞书机器人通知（v13，2026-10-17）
-- FRED 段：CPI/PCE 同比 + 失业率/非农/初请
-- 市场指标：金铜比
-- FR 跨所差异：纳入 Hyperliquid + 过滤异常（|FR| > 30%）
-- 稳定币细分：USDE 锚定监控
+飞书机器人通知（v14，2026-10-17）
+- 新增 HY OAS 20D 变化（S6 CREDIT_STRESS 输入）
+- 新增 USDJPY（Chain B carry trade）
 """
 import os
 import sys
@@ -457,6 +455,11 @@ def build_message():
             if v is not None:
                 lines.append(f"  初请: {v:,.0f} ({d})")
 
+            # USDJPY（Chain B）
+            v, d = la('DEXJPUS')
+            if v is not None:
+                lines.append(f"  USDJPY: {v:.2f} ({d})")
+
             # 收益率曲线
             t2, _ = la('DGS2')
             t10, _ = la('DGS10')
@@ -484,9 +487,20 @@ def build_message():
             if v is not None:
                 lines.append(f"  10Y Breakeven: {v:.2f}%")
 
+            # 信用利差（整体 + 分层）
             v, _ = la('BAMLH0A0HYM2')
             if v is not None:
                 lines.append(f"  HY OAS: {v*100:.0f}bp")
+
+            # HY OAS 20D 变化（S6 CREDIT_STRESS 输入）
+            sub_hy = df[df['series'] == 'BAMLH0A0HYM2'].sort_values('date')
+            if len(sub_hy) >= 21:
+                cur_hy = float(sub_hy.iloc[-1]['value'])
+                prev_hy = float(sub_hy.iloc[-21]['value'])
+                if prev_hy > 0:
+                    chg = (cur_hy / prev_hy - 1) * 100
+                    lines.append(f"  HY OAS 20D: {chg:+.1f}%")
+
             v, _ = la('BAMLH0A1HYBB')
             if v is not None:
                 lines.append(f"    BB: {v*100:.0f}bp")

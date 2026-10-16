@@ -70,6 +70,7 @@ SERIES = [
     'PAYEMS',
     'UNRATE',
     'ICSA',
+    'DEXJPUS',
 ]
 
 
