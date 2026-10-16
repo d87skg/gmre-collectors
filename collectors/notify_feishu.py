@@ -1,8 +1,8 @@
 """
-飞书机器人通知（v12，2026-10-16）
-- FRED 段：新增 CPI/PCE 同比 + 失业率/非农/初请
-- 市场指标：新增金铜比
-- FR 跨所差异：纳入 Hyperliquid
+飞书机器人通知（v13，2026-10-17）
+- FRED 段：CPI/PCE 同比 + 失业率/非农/初请
+- 市场指标：金铜比
+- FR 跨所差异：纳入 Hyperliquid + 过滤异常（|FR| > 30%）
 - 稳定币细分：USDE 锚定监控
 """
 import os
@@ -239,11 +239,16 @@ def build_message():
             latest = df['date'].max()
             df = df[df['date'] == latest]
             df = df.sort_values(['index', 'open_interest_usd'], ascending=[True, False])
-                        lines.append(f"📊 多交易所衍生品 ({latest}, CoinGecko)")
-            # 过滤 FR 异常（绝对值 > 30%）
-            df_clean = df[df['funding_rate_annual_pct'].abs() < 30].copy()
-            df_abnormal = df[df['funding_rate_annual_pct'].abs() >= 30]
 
+            # 过滤 FR 异常（|FR| > 30%）
+            if 'funding_rate_annual_pct' in df.columns:
+                df_clean = df[df['funding_rate_annual_pct'].abs() < 30].copy()
+                df_abnormal = df[df['funding_rate_annual_pct'].abs() >= 30]
+            else:
+                df_clean = df
+                df_abnormal = pd.DataFrame()
+
+            lines.append(f"📊 多交易所衍生品 ({latest}, CoinGecko)")
             for _, r in df_clean.iterrows():
                 mkt = str(r['market']).replace(' (Futures)', '')
                 idx = str(r['index'])
@@ -252,11 +257,10 @@ def build_message():
                 fr_str = f"{fr:+.1f}%" if pd.notna(fr) else "N/A"
                 lines.append(f"  {mkt:10s} {idx}: FR {fr_str}, OI ${oi:.2f}B")
 
-            # 异常行单独提示
             if not df_abnormal.empty:
                 lines.append(f"  ⚠️ 已过滤 {len(df_abnormal)} 条 FR 异常（|FR| > 30%）")
 
-            # 读取 HL FR
+            # 读 HL FR
             hl_frs = {}
             hl_p = Path('data/hyperliquid.csv')
             if hl_p.exists():
@@ -269,8 +273,9 @@ def build_message():
                 except Exception:
                     pass
 
+            # 跨所差异（用 df_clean 计算，避免异常值污染）
             for idx in ['BTC', 'ETH']:
-                sub = df[df['index'] == idx]
+                sub = df_clean[df_clean['index'] == idx]
                 frs = list(sub['funding_rate_annual_pct'].dropna())
                 if idx in hl_frs:
                     frs.append(hl_frs[idx])
@@ -302,7 +307,6 @@ def build_message():
                 else:
                     lines.append(f"  {sym}: {v:.2f}")
 
-            # 金铜比
             gold_row = df[df['symbol'] == 'GOLD']
             copper_row = df[df['symbol'] == 'COPPER']
             if not gold_row.empty and not copper_row.empty:
@@ -468,7 +472,6 @@ def build_message():
             if v is not None:
                 lines.append(f"  10Y-3M: {v*100:+.0f}bp")
 
-            # 真实利率 + Breakeven
             v, _ = la('DFII10')
             if v is not None:
                 lines.append(f"  10Y TIPS: {v:.2f}%")
@@ -479,7 +482,6 @@ def build_message():
             if v is not None:
                 lines.append(f"  10Y Breakeven: {v:.2f}%")
 
-            # 信用利差（整体 + 分层）
             v, _ = la('BAMLH0A0HYM2')
             if v is not None:
                 lines.append(f"  HY OAS: {v*100:.0f}bp")
