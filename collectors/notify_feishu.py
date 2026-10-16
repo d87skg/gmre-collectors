@@ -326,6 +326,8 @@ def build_message():
             df = pd.read_csv(p).sort_values('datetime')
             latest_dt = df['datetime'].max()
             df = df[df['datetime'] == latest_dt]
+            df['_order'] = df['symbol'].map({'BTC': 0, 'ETH': 1, 'SOL': 2})
+            df = df.sort_values('_order')
             lines.append(f"⛓️ Hyperliquid 链上 ({latest_dt} UTC)")
             for _, r in df.iterrows():
                 sym = str(r['symbol'])
