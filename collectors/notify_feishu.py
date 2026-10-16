@@ -239,14 +239,22 @@ def build_message():
             latest = df['date'].max()
             df = df[df['date'] == latest]
             df = df.sort_values(['index', 'open_interest_usd'], ascending=[True, False])
-            lines.append(f"📊 多交易所衍生品 ({latest}, CoinGecko)")
-            for _, r in df.iterrows():
+                        lines.append(f"📊 多交易所衍生品 ({latest}, CoinGecko)")
+            # 过滤 FR 异常（绝对值 > 30%）
+            df_clean = df[df['funding_rate_annual_pct'].abs() < 30].copy()
+            df_abnormal = df[df['funding_rate_annual_pct'].abs() >= 30]
+
+            for _, r in df_clean.iterrows():
                 mkt = str(r['market']).replace(' (Futures)', '')
                 idx = str(r['index'])
                 fr = r['funding_rate_annual_pct']
                 oi = float(r['open_interest_usd']) / 1e9
                 fr_str = f"{fr:+.1f}%" if pd.notna(fr) else "N/A"
                 lines.append(f"  {mkt:10s} {idx}: FR {fr_str}, OI ${oi:.2f}B")
+
+            # 异常行单独提示
+            if not df_abnormal.empty:
+                lines.append(f"  ⚠️ 已过滤 {len(df_abnormal)} 条 FR 异常（|FR| > 30%）")
 
             # 读取 HL FR
             hl_frs = {}
