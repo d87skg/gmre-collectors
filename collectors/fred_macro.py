@@ -32,6 +32,10 @@ import pandas as pd
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from dotenv import load_dotenv
+
+# 加载 .env（写死绝对路径）
+load_dotenv(r'D:\HGZC\.env')
 
 OUT = Path('data/fred_macro.csv')
 BASE = 'https://api.stlouisfed.org/fred/series/observations'

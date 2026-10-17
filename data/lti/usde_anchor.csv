@@ -1,0 +1,2 @@
+timestamp,usde_price,deviation_bp,change_24h_pct,status,source,data_type
+2026-10-16T17:07:27.752009+00:00,0.999443,-5.57,0.006447257006393202,NORMAL,coingecko,observed

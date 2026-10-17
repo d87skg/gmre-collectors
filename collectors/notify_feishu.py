@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv(r'D:\HGZC\.env')
 """
 飞书机器人通知（v14，2026-10-17）
 - 新增 HY OAS 20D 变化（S6 CREDIT_STRESS 输入）
