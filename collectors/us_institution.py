@@ -4,28 +4,37 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 def get_coinbase_premium():
-    """计算 Coinbase 相对 Binance 的 BTC 现货溢价（带伪装防封）"""
+    """计算 Coinbase 相对 Binance 的 BTC 现货溢价（加固防错版）"""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
+    cb_price, bn_price = None, None
+    
+    # 1. 获取 Coinbase 价格（改用最稳定的 v2 接口，带回退）
     try:
-        # 获取 Coinbase 价格（改用 Coinbase Exchange 的 ticker 端点，对云 IP 容忍度高一点）
-        cb_res = requests.get('https://api.exchange.coinbase.com/products/BTC-USD/ticker', headers=headers, timeout=10)
-        if cb_res.status_code == 200:
-            cb_price = float(cb_res.json()['price'])
-        else:
-            cb_res = requests.get('https://api.coinbase.com/v2/prices/BTC-USD/spot', headers=headers, timeout=10)
-            cb_price = float(cb_res.json()['data']['amount'])
-        
-        # 获取 Binance 价格
-        bn_res = requests.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT', headers=headers, timeout=10)
-        bn_price = float(bn_res.json()['price'])
-        
+        cb_res = requests.get('https://api.coinbase.com/v2/prices/BTC-USD/spot', headers=headers, timeout=10).json()
+        cb_price = float(cb_res['data']['amount'])
+    except Exception as e:
+        print(f"Coinbase v2 失败，尝试备用接口: {e}")
+        try:
+            cb_res = requests.get('https://api.exchange.coinbase.com/products/BTC-USD/ticker', headers=headers, timeout=10).json()
+            cb_price = float(cb_res['price'])
+        except Exception as e2:
+            print(f"Coinbase 备用接口也失败: {e2}")
+
+    # 2. 获取 Binance 价格
+    try:
+        bn_res = requests.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT', headers=headers, timeout=10).json()
+        bn_price = float(bn_res['price'])
+    except Exception as e:
+        print(f"Binance 价格抓取失败: {e}")
+
+    # 3. 计算溢价
+    if cb_price and bn_price:
         premium = ((cb_price - bn_price) / bn_price) * 100
         return cb_price, bn_price, premium
-    except Exception as e:
-        print(f"Coinbase 溢价抓取失败: {e}")
-        return None, None, None
+        
+    return None, None, None
 
 def get_bitget_fr():
     """获取 Bitget BTC 永续合约资金费率"""
@@ -70,6 +79,8 @@ def main():
         Path('data').mkdir(exist_ok=True)
         df.to_csv('data/us_institution.csv', index=False)
         print(f"已保存 {len(rows)} 条美国机构指标数据")
+    else:
+        print("❌ 未获取到机构数据")
 
 if __name__ == '__main__':
     main()
