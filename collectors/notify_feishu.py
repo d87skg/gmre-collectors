@@ -3,9 +3,7 @@ try:
     load_dotenv(r'D:\HGZC\.env')
 except ImportError:
     pass
-# 飞书机器人通知（v22 全资产宏观雷达版）
-# - 核心升级：机构级全资产宏观引擎判定
-# - 包含：多空博弈、Coinbase溢价、宏观体制、期权偏斜、订单簿深度等
+# 飞书机器人通知（v23.1 大宗商品全周期雷达版 - 修复引擎判定）
 import os
 import sys
 import time
@@ -193,7 +191,7 @@ def build_message():
             lines.append(f"🌐 全市场失败: {e}")
             lines.append("")
 
-    # === CoinGecko 稳定币细分（分层展示） ===
+    # === CoinGecko 稳定币细分 ===
     p = Path('data/coingecko_stablecoins.csv')
     if p.exists():
         try:
@@ -307,8 +305,9 @@ def build_message():
             lines.append(f"📊 CG 衍生品失败: {e}")
             lines.append("")
 
-    # === Yahoo & 资产相对定价矩阵 (V19 & V20) ===
+    # === Yahoo & 资产相对定价矩阵 ===
     p = Path('data/yahoo_market.csv')
+    prices = {}
     if p.exists():
         try:
             df = pd.read_csv(p)
@@ -320,12 +319,11 @@ def build_message():
             is_weekend = utc_now.weekday() >= 5
             weekend_note = " (周末沿用周五收盘)" if is_weekend else ""
 
-            prices = {}
             for _, r in df_latest.iterrows():
                 sym = str(r['symbol'])
                 v = float(r['value'])
                 prices[sym] = v
-                if sym in ('GOLD', 'OIL', 'COPPER'):
+                if sym in ('GOLD', 'OIL', 'COPPER', 'SILVER', 'WHEAT'):
                     lines.append(f"  {sym}: ${v:,.2f}")
                 elif sym == 'NDX':
                     lines.append(f"  {sym}: {v:,.1f}")
@@ -334,7 +332,6 @@ def build_message():
                 else:
                     lines.append(f"  {sym}: {v:.2f}")
 
-            # --- V19 核心：宏观相对定价矩阵 ---
             lines.append("")
             lines.append(f"📐 宏观相对定价矩阵")
             
@@ -343,22 +340,28 @@ def build_message():
             d = prices.get('DXY')
             o = prices.get('OIL')
             n = prices.get('NDX')
-            s = prices.get('SILVER', None) 
+            s = prices.get('SILVER')
+            w = prices.get('WHEAT')
 
             if g and c: lines.append(f"  金铜比 (避险/工业): {g/c:.0f}")
             if g and d: lines.append(f"  金美元比 (硬资产/纸币): {g/d:.2f}")
             if c and o: lines.append(f"  铜油比 (景气/滞胀): {c/o:.3f}")
             if g and o: lines.append(f"  金油比 (购买力/能源): {g/o:.2f}")
             if g and n: lines.append(f"  金纳指比 (避险/科技): {g/n:.3f}")
+            
+            if g and s:
+                ratio = g/s
+                lines.append(f"  金银比 (货币/工业): {ratio:.2f} (>80避险主导, <50经济狂热)")
+            if w and c:
+                # 小麦单位是美分/蒲式耳，所以除以100变成美元
+                lines.append(f"  麦铜比 (农产品/工业): {(w/100)/c:.3f}")
 
-            # --- V20 新增：信用风险代理 HYG/LQD ---
             hyg_row = prices.get('HYG')
             lqd_row = prices.get('LQD')
             if hyg_row and lqd_row:
                 if lqd_row > 0:
                     lines.append(f"  HYG/LQD (信用/投资级): {hyg_row/lqd_row:.3f}")
 
-            # --- V19 核心：20D 收益率动量 (收益曲线) ---
             lines.append("")
             lines.append(f"📈 市场动量 (20D收益率)")
             for sym in ['GOLD', 'COPPER', 'OIL', 'NDX', 'BTC']:
@@ -376,7 +379,7 @@ def build_message():
             lines.append(f"📈 Yahoo 失败: {e}")
             lines.append("")
 
-    # === 美国机构与补充 FR (V20) ===
+    # === 美国机构与补充 FR ===
     p = Path('data/us_institution.csv')
     if p.exists():
         try:
@@ -393,26 +396,6 @@ def build_message():
             lines.append("")
         except Exception as e:
             lines.append(f"🇺🇸 机构指标失败: {e}")
-            lines.append("")
-
-    # === Binance 多空博弈 ===
-    p = Path('data/binance_sentiment.csv')
-    if p.exists():
-        try:
-            df = pd.read_csv(p)
-            lines.append(f"⚔️ Binance 资金多空博弈")
-            for _, r in df.iterrows():
-                m = str(r['metric'])
-                v = float(r['value'])
-                if m == 'RETAIL_LONG_SHORT_RATIO':
-                    bias = "偏多" if v > 1 else "偏空"
-                    lines.append(f"  散户人数比: {v:.2f} ({bias}) | {r['extra']}")
-                elif m == 'TOP_LONG_SHORT_RATIO':
-                    bias = "偏多" if v > 1 else "偏空"
-                    lines.append(f"  大户持仓比: {v:.2f} ({bias}) | {r['extra']}")
-            lines.append("")
-        except Exception as e:
-            lines.append(f"⚔️ 多空博弈数据失败: {e}")
             lines.append("")
 
     # === Hyperliquid 链上 & 加密比价 ===
@@ -437,10 +420,9 @@ def build_message():
                 oi_str = f"${oi * mid / 1e9:.2f}B" if oi else "N/A"
                 lines.append(f"  {sym}: mid=${mid:,.2f} | FR {fr_str} | OI {oi_str}")
 
-            # --- V19 核心：加密资产比价 ---
             btc = hl_prices.get('BTC')
             eth = hl_prices.get('ETH')
-            if 'g' in locals() and btc:
+            if g and btc:
                 lines.append(f"  金BTC比 (传统避险/数字黄金): {g/btc:.2f}")
             if btc and eth:
                 lines.append(f"  ETH/BTC比 (山寨/核心): {eth/btc:.4f}")
@@ -449,7 +431,7 @@ def build_message():
             lines.append(f"⛓️ Hyperliquid 失败: {e}")
             lines.append("")
 
-    # === Hyperliquid 订单簿深度 (V19.5 新增) ===
+    # === Hyperliquid 订单簿深度 ===
     p = Path('data/hyperliquid_depth.csv')
     if p.exists():
         try:
@@ -723,24 +705,6 @@ def build_message():
             lines.append(f"🪙 稳定币失败: {e}")
             lines.append("")
 
-    # === 稳定币 Mint/Burn 流量 (V19) ===
-    p = Path('data/defillama_flows.csv')
-    if p.exists():
-        try:
-            df = pd.read_csv(p)
-            snap = df[df['source'] == 'flow_snapshot'].copy()
-            if not snap.empty:
-                lines.append(f"💧 稳定币净流量 (24h, DefiLlama)")
-                for _, r in snap.sort_values('net_flow_24h', ascending=False).iterrows():
-                    sym = str(r['symbol'])
-                    flow = float(r['net_flow_24h']) / 1e9
-                    direction = "🟢 铸造" if flow > 0 else "🔴 赎回"
-                    lines.append(f"  {sym}: {flow:+.3f}B {direction}")
-                lines.append("")
-        except Exception as e:
-            lines.append(f"💧 稳定币流量失败: {e}")
-            lines.append("")
-
     # === Deribit / OKX ===
     for fname, title in [
         ('deribit_funding.csv', '💰 Deribit 永续 Funding'),
@@ -809,7 +773,7 @@ def build_message():
             lines.append(f"📉 DVOL 失败: {e}")
             lines.append("")
 
-    # === Deribit 期权信号 (V18.5) ===
+    # === Deribit 期权信号 ===
     p = Path('data/deribit_skew.csv')
     if p.exists():
         try:
@@ -855,7 +819,7 @@ def build_message():
             lines.append(f"⛓️ On-chain 失败: {e}")
             lines.append("")
 
-    # === BGeometrics 链上估值 (V18 新增) ===
+    # === BGeometrics 链上估值 ===
     p = Path('data/bgeometrics_onchain.csv')
     if p.exists():
         try:
@@ -936,13 +900,16 @@ def build_message():
     # ==========================================
     # 🏛️ 机构级全资产宏观引擎 (Macro Regime Engine)
     # ==========================================
+    p_yahoo = Path('data/yahoo_market.csv')
     regime_growth = "中性"
     regime_inflation = "中性"
     liquidity_state = "中性"
     cross_asset_bias = "中性"
     tail_risk = "正常"
+    commodity_regime = "震荡"
+    crash_warning = ""
 
-    # 1. 判定增长与通胀 (Growth & Inflation)
+    # 1. 判定增长与通胀
     try:
         p_fred = Path('data/fred_macro.csv')
         if p_fred.exists():
@@ -963,7 +930,7 @@ def build_message():
     except Exception:
         pass
 
-    # 2. 判定流动性 (Liquidity)
+    # 2. 判定流动性
     try:
         p_tga = Path('data/treasury_tga.csv')
         p_nyfed = Path('data/nyfed_rates.csv')
@@ -979,9 +946,8 @@ def build_message():
     except Exception:
         pass
 
-    # 3. 判定跨资产偏好 (Cross-Asset)
+    # 3. 判定跨资产偏好
     try:
-        p_yahoo = Path('data/yahoo_market.csv')
         if p_yahoo.exists():
             df_y = pd.read_csv(p_yahoo)
             latest_y = df_y['date'].max()
@@ -992,7 +958,7 @@ def build_message():
     except Exception:
         pass
 
-    # 4. 判定尾部风险 (Tail Risk)
+    # 4. 判定尾部风险
     try:
         p_deriv = Path('data/coingecko_derivatives.csv')
         if p_deriv.exists():
@@ -1004,15 +970,66 @@ def build_message():
     except Exception:
         pass
 
-    # 生成机构晨报头部
+    # 5. 判定大宗商品轮动阶段与泡沫风险
+    try:
+        if p_yahoo.exists():
+            df_y = pd.read_csv(p_yahoo)
+            latest_y = df_y['date'].max()
+            
+            def get_p(sym):
+                row = df_y[(df_y['date'] == latest_y) & (df_y['symbol'] == sym)]
+                return float(row['value'].iloc[-1]) if not row.empty else None
+                
+            gold = get_p('GOLD')
+            silver = get_p('SILVER')
+            copper = get_p('COPPER')
+            oil = get_p('OIL')
+            wheat = get_p('WHEAT')
+            
+            if gold and silver and copper and oil:
+                gs_ratio = gold / silver
+                co_ratio = copper / oil
+                
+                if gs_ratio > 80:
+                    commodity_regime = "衰退避险期 (金银比极高)"
+                elif gs_ratio < 55 and co_ratio > 0.07:
+                    commodity_regime = "复苏繁荣期 (铜博士引领)"
+                elif co_ratio < 0.05 and oil > 90:
+                    commodity_regime = "滞胀期 (油强铜弱)"
+                
+                if wheat:
+                    sub_w = df_y[df_y['symbol'] == 'WHEAT'].sort_values('date')
+                    if len(sub_w) >= 21:
+                        w_20d = (sub_w.iloc[-1]['value'] / sub_w.iloc[-21]['value'] - 1) * 100
+                        if w_20d > 10:
+                            commodity_regime += " ⚠️农产品异动(牛尾特征)"
+            
+            # 检查原油、铜、小麦过去 60 天涨幅
+            for sym in ['OIL', 'COPPER', 'WHEAT']:
+                sub = df_y[df_y['symbol'] == sym].sort_values('date')
+                if len(sub) >= 60:
+                    chg_60d = (sub.iloc[-1]['value'] / sub.iloc[-60]['value'] - 1) * 100
+                    if chg_60d > 25:
+                        crash_warning = "⚠️部分商品短期暴涨超25%，谨防暴跌"
+    except Exception:
+        pass
+
+    # === 生成机构晨报头部 ===
     lines.insert(2, "====================================")
     lines.insert(3, f"⚖️ 宏观体制: {regime_growth} + {regime_inflation}")
     lines.insert(4, f"💧 流动性状态: {liquidity_state}")
     lines.insert(5, f"🌐 跨资产基调: {cross_asset_bias}")
     lines.insert(6, f"🚨 加密尾部风险: {tail_risk}")
-    lines.insert(7, "🎯 战术建议: 避险为主，做多硬资产(黄金/油)，股指维持防守，加密市场逢高做空或观望。")
-    lines.insert(8, "====================================")
-    lines.insert(9, "")
+    lines.insert(7, f"🔔 大宗商品周期: {commodity_regime}")
+    if crash_warning:
+        lines.insert(8, f"🩸 风险警告: {crash_warning}")
+        lines.insert(9, "🎯 战术建议: 避险为主，做多硬资产(黄金/油)，股指维持防守，加密市场逢高做空或观望。")
+        lines.insert(10, "====================================")
+        lines.insert(11, "")
+    else:
+        lines.insert(8, "🎯 战术建议: 避险为主，做多硬资产(黄金/油)，股指维持防守，加密市场逢高做空或观望。")
+        lines.insert(9, "====================================")
+        lines.insert(10, "")
 
     # === 时间戳 ===
     now_utc = datetime.now(timezone.utc)

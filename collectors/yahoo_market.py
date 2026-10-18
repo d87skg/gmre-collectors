@@ -18,13 +18,15 @@ SYMBOLS = {
     '^VIX':      'VIX',
     'DX-Y.NYB':  'DXY',
     'GC=F':      'GOLD',
+    'SI=F':      'SILVER', # 新增：白银期货
     'CL=F':      'OIL',
+    'HG=F':      'COPPER',
+    'ZW=F':      'WHEAT',  # 新增：小麦期货 (农产品代表)
     '^NDX':      'NDX',
     'TLT':       'TLT',
-    'HG=F':      'COPPER',
     'JPY=X':     'USDJPY',
-    'HYG':       'HYG',  # 新增：高收益债 ETF
-    'LQD':       'LQD',  # 新增：投资级债 ETF
+    'HYG':       'HYG',
+    'LQD':       'LQD',
 }
 
 
