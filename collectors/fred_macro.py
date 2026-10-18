@@ -85,6 +85,9 @@ SERIES = [
     # 景气度（交叉验证非农）
     'NAPM',
     'NAPMNOI',
+    'MANEMP',    # 制造业就业
+    'UMCSENT',   # 密歇根消费者信心
+    'IORB',      # 准备金余额利率
 ]
 
 

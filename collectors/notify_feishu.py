@@ -3,7 +3,7 @@ try:
     load_dotenv(r'D:\HGZC\.env')
 except ImportError:
     pass
-# 飞书机器人通知（v16，2026-10-18）
+# 飞书机器人通知（v17，2026-10-18）
 # - 新增：USDJPY 周末备注
 # - 新增：USDS 常规监控，USDG/PYUSD/RLUSD 显示偏离，USDD/GHO 不展示
 import os
@@ -497,6 +497,17 @@ def build_message():
             if v is not None:
                 lines.append(f"  初请: {v:,.0f} ({d})")
 
+            # --- v17 新增：制造业就业与消费者信心 ---
+            sub_man = df[df['series'] == 'MANEMP'].sort_values('date')
+            if len(sub_man) >= 2:
+                diff_man = float(sub_man.iloc[-1]['value']) - float(sub_man.iloc[-2]['value'])
+                lines.append(f"  制造业就业: {diff_man:+,.0f}K ({sub_man.iloc[-1]['date']})")
+            
+            v, d = la('UMCSENT')
+            if v is not None:
+                lines.append(f"  消费者信心: {v:.1f} ({d})")
+            # ----------------------------------------
+
             # 工资
             v, _ = la('CES0500000003')
             if v is not None:
@@ -581,6 +592,12 @@ def build_message():
             tb, _ = la('TB3MS')
             if cp is not None and tb is not None:
                 lines.append(f"  CP-Tbill: {(cp-tb)*100:+.0f}bp")
+            # --- v17 新增：回购市场压力 ---
+            sofr_val, _ = la('SOFR')
+            iorb_val, _ = la('IORB')
+            if sofr_val is not None and iorb_val is not None:
+                lines.append(f"  SOFR-IORB: {(sofr_val-iorb_val)*100:+.1f}bp")
+            # ----------------------------
             cp60, _ = la('RIFSPPNA2P2D60NB')
             if cp60 is not None and tb is not None:
                 lines.append(f"  CP60-Tbill: {(cp60-tb)*100:+.0f}bp")
