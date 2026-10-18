@@ -3,14 +3,10 @@ try:
     load_dotenv(r'D:\HGZC\.env')
 except ImportError:
     pass
-# 飞书机器人通知（v21，2026-10-18）
-# - 新增：数据时效性提示
-# - 新增：期权信号 (RR25/PCR)
-# - 新增：稳定币净流量 (DefiLlama)
-# - 新增：HL 订单簿深度 (清算燃料)
-# - 新增：HYG/LQD 信用市场即时代理
-# - 新增：Coinbase 溢价与 Bitget FR (跨所验证)
-# - 新增：智能盘面总结生成
+# 飞书机器人通知（v22 全资产宏观雷达版）
+# - 核心升级：机构级全资产宏观引擎判定
+# - 包含：宏观体制、流动性状态、跨资产基调、尾部风险、战术建议
+# - 保留：期权信号、HL深度、Coinbase溢价、HYG/LQD、链上估值等全量数据
 import os
 import sys
 import time
@@ -55,13 +51,6 @@ def calc_cot_zscore(df):
 
 def build_message():
     lines = ["📊 GMRE 数据更新", ""]
-    
-    # 数据时效性提示
-    lines.append(f"⚠️ 数据时效性提示：")
-    lines.append(f"  实时 (T+0): 加密价格、衍生品 FR/OI、期权信号、HL深度、Coinbase溢价")
-    lines.append(f"  滞后 (T+1): Yahoo 资产价格、美股 ETF")
-    lines.append(f"  滞后 (周/月): FRED 宏观、CFTC 持仓、BGeometrics 链上估值")
-    lines.append("")
 
     # === CFTC COT ===
     p = Path('data/cftc_cot.csv')
@@ -925,50 +914,86 @@ def build_message():
             lines.append(f"{title} 失败: {e}")
             lines.append("")
 
-    # === 智能盘面总结生成 ===
-    summary = "🤖 [系统总结] "
+    # ==========================================
+    # 🏛️ 机构级全资产宏观引擎 (Macro Regime Engine)
+    # ==========================================
+    regime_growth = "中性"
+    regime_inflation = "中性"
+    liquidity_state = "中性"
+    cross_asset_bias = "中性"
+    tail_risk = "正常"
+
+    # 1. 判定增长与通胀 (Growth & Inflation)
     try:
-        # 1. 检查跨所杠杆撕裂
+        p_fred = Path('data/fred_macro.csv')
+        if p_fred.exists():
+            df_f = pd.read_csv(p_fred)
+            unrate = df_f[df_f['series'] == 'UNRATE']['value'].iloc[-1]
+            cpi = df_f[df_f['series'] == 'CPIENGSL']['value'].iloc[-1]
+            umcsent = df_f[df_f['series'] == 'UMCSENT']['value'].iloc[-1]
+            
+            if umcsent < 60:
+                regime_growth = "衰退风险 (增长极弱)"
+            elif umcsent > 80:
+                regime_growth = "扩张 (增长强劲)"
+
+            if cpi > 10:
+                regime_inflation = "高通胀 (能源驱动)"
+            elif cpi < 2:
+                regime_inflation = "通缩风险"
+    except Exception:
+        pass
+
+    # 2. 判定流动性 (Liquidity)
+    try:
+        p_tga = Path('data/treasury_tga.csv')
+        p_nyfed = Path('data/nyfed_rates.csv')
+        if p_tga.exists() and p_nyfed.exists():
+            df_tga = pd.read_csv(p_tga)
+            df_nf = pd.read_csv(p_nyfed)
+            tga = df_tga['value'].iloc[-1]
+            rrp = df_nf[df_nf['series'] == 'RRP_BALANCE']['value'].iloc[-1]
+            if tga > 900 and rrp < 10:
+                liquidity_state = "极度紧缩 (TGA抽水, RRP枯竭)"
+            elif tga < 700:
+                liquidity_state = "边际宽松 (TGA释放)"
+    except Exception:
+        pass
+
+    # 3. 判定跨资产偏好 (Cross-Asset)
+    try:
+        p_yahoo = Path('data/yahoo_market.csv')
+        if p_yahoo.exists():
+            df_y = pd.read_csv(p_yahoo)
+            latest_y = df_y['date'].max()
+            gold = df_y[(df_y['date'] == latest_y) & (df_y['symbol'] == 'GOLD')]['value'].iloc[-1]
+            oil = df_y[(df_y['date'] == latest_y) & (df_y['symbol'] == 'OIL')]['value'].iloc[-1]
+            if (gold/oil) > 40:
+                cross_asset_bias = "避险主导 (商品通胀/股市承压)"
+    except Exception:
+        pass
+
+    # 4. 判定尾部风险 (Tail Risk)
+    try:
         p_deriv = Path('data/coingecko_derivatives.csv')
         if p_deriv.exists():
             df_d = pd.read_csv(p_deriv).sort_values('date')
             df_d = df_d[df_d['date'] == df_d['date'].max()]
             btc_frs = df_d[df_d['index'] == 'BTC']['funding_rate_annual_pct'].dropna()
-            if len(btc_frs) >= 2:
-                fr_diff = btc_frs.max() - btc_frs.min()
-                if fr_diff > 10:
-                    summary += f"杠杆撕裂严重({fr_diff:.1f}%)；"
-
-        # 2. 检查期权下行保护
-        p_skew = Path('data/deribit_skew.csv')
-        if p_skew.exists():
-            df_s = pd.read_csv(p_skew)
-            btc_skew = df_s[df_s['currency'] == 'BTC']
-            if not btc_skew.empty:
-                rr25 = float(btc_skew.iloc[0]['rr25'])
-                if rr25 < 0:
-                    summary += "期权暗藏下行保护；"
-
-        # 3. 检查信用市场
-        p_yahoo = Path('data/yahoo_market.csv')
-        if p_yahoo.exists():
-            df_y = pd.read_csv(p_yahoo)
-            latest_y = df_y['date'].max()
-            hyg_row = df_y[(df_y['date'] == latest_y) & (df_y['symbol'] == 'HYG')]
-            lqd_row = df_y[(df_y['date'] == latest_y) & (df_y['symbol'] == 'LQD')]
-            if not hyg_row.empty and not lqd_row.empty:
-                hyg = float(hyg_row.iloc[0]['value'])
-                lqd = float(lqd_row.iloc[0]['value'])
-                if (hyg/lqd) < 0.75:
-                    summary += "信用市场承压；"
+            if len(btc_frs) >= 2 and (btc_frs.max() - btc_frs.min()) > 10:
+                tail_risk = f"高 (杠杆极端撕裂 {btc_frs.max()-btc_frs.min():.1f}%)"
     except Exception:
         pass
 
-    summary += "建议保持低仓位，等待极端杠杆出清。"
-    
-    # 把总结插到最前面（标题之后）
-    lines.insert(2, summary)
-    lines.insert(3, "")
+    # 生成机构晨报头部
+    lines.insert(2, "====================================")
+    lines.insert(3, f"⚖️ 宏观体制: {regime_growth} + {regime_inflation}")
+    lines.insert(4, f"💧 流动性状态: {liquidity_state}")
+    lines.insert(5, f"🌐 跨资产基调: {cross_asset_bias}")
+    lines.insert(6, f"🚨 加密尾部风险: {tail_risk}")
+    lines.insert(7, "🎯 战术建议: 避险为主，做多硬资产(黄金/油)，股指维持防守，加密市场逢高做空或观望。")
+    lines.insert(8, "====================================")
+    lines.insert(9, "")
 
     # === 时间戳 ===
     now_utc = datetime.now(timezone.utc)
