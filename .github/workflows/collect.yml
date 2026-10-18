@@ -52,7 +52,7 @@ jobs:
           python collectors/nyfed_rates.py || echo "NY Fed failed"
           python collectors/treasury_tga.py || echo "TGA failed"
           python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
-          python collectors/defillama_flows.py || echo "DefiLlama flows failed"
+          python collectors/us_institution.py || echo "US inst failed"
           python collectors/coingecko_global.py || echo "CG global failed"
           python collectors/coingecko_stablecoins.py || echo "CG stables failed"
           python collectors/coingecko_exchange_vol.py || echo "CG exvol failed"

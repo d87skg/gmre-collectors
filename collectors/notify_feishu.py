@@ -3,11 +3,13 @@ try:
     load_dotenv(r'D:\HGZC\.env')
 except ImportError:
     pass
-# 飞书机器人通知（v20，2026-10-18）
+# 飞书机器人通知（v21，2026-10-18）
+# - 新增：数据时效性提示
 # - 新增：期权信号 (RR25/PCR)
 # - 新增：稳定币净流量 (DefiLlama)
 # - 新增：HL 订单簿深度 (清算燃料)
 # - 新增：HYG/LQD 信用市场即时代理
+# - 新增：Coinbase 溢价与 Bitget FR (跨所验证)
 import os
 import sys
 import time
@@ -52,12 +54,13 @@ def calc_cot_zscore(df):
 
 def build_message():
     lines = ["📊 GMRE 数据更新", ""]
+    
+    # 数据时效性提示
     lines.append(f"⚠️ 数据时效性提示：")
-    lines.append(f"  实时 (T+0): 加密价格、衍生品 FR/OI、期权信号、HL深度")
+    lines.append(f"  实时 (T+0): 加密价格、衍生品 FR/OI、期权信号、HL深度、Coinbase溢价")
     lines.append(f"  滞后 (T+1): Yahoo 资产价格、美股 ETF")
     lines.append(f"  滞后 (周/月): FRED 宏观、CFTC 持仓、BGeometrics 链上估值")
     lines.append("")
-
 
     # === CFTC COT ===
     p = Path('data/cftc_cot.csv')
@@ -351,7 +354,7 @@ def build_message():
             d = prices.get('DXY')
             o = prices.get('OIL')
             n = prices.get('NDX')
-            s = prices.get('SILVER', None) # 如果本地没有SILVER，会自动跳过
+            s = prices.get('SILVER', None) 
 
             if g and c: lines.append(f"  金铜比 (避险/工业): {g/c:.0f}")
             if g and d: lines.append(f"  金美元比 (硬资产/纸币): {g/d:.2f}")
@@ -371,7 +374,7 @@ def build_message():
             lines.append(f"📈 市场动量 (20D收益率)")
             for sym in ['GOLD', 'COPPER', 'OIL', 'NDX', 'BTC']:
                 if sym == 'BTC':
-                    continue # BTC 不在 yahoo 里，下面单独算
+                    continue 
                 sub = df[df['symbol'] == sym].sort_values('date')
                 if len(sub) >= 21:
                     cur = float(sub.iloc[-1]['value'])
@@ -382,6 +385,25 @@ def build_message():
             lines.append("")
         except Exception as e:
             lines.append(f"📈 Yahoo 失败: {e}")
+            lines.append("")
+
+    # === 美国机构与补充 FR (V20) ===
+    p = Path('data/us_institution.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            lines.append(f"🇺🇸 机构与跨所验证")
+            for _, r in df.iterrows():
+                m = str(r['metric'])
+                v = float(r['value'])
+                if m == 'COINBASE_PREMIUM':
+                    flag = " 🇺🇸 机构买盘" if v > 0.05 else (" 🇺🇸 机构抛压" if v < -0.05 else "")
+                    lines.append(f"  Coinbase溢价: {v:+.3f}%{flag} ({r['extra']})")
+                elif m == 'BITGET_FR':
+                    lines.append(f"  Bitget BTC FR: {v:+.2f}% 年化")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"🇺🇸 机构指标失败: {e}")
             lines.append("")
 
     # === Hyperliquid 链上 & 加密比价 ===
@@ -409,7 +431,6 @@ def build_message():
             # --- V19 核心：加密资产比价 ---
             btc = hl_prices.get('BTC')
             eth = hl_prices.get('ETH')
-            # 引入前面的 GOLD 价格
             if 'g' in locals() and btc:
                 lines.append(f"  金BTC比 (传统避险/数字黄金): {g/btc:.2f}")
             if btc and eth:
@@ -527,7 +548,6 @@ def build_message():
             if v is not None:
                 lines.append(f"  准备金: ${v/1e6:.2f}T ({d})")
 
-            # 通胀（同比）
             v, d = yoy('CPIAUCSL')
             if v is not None:
                 lines.append(f"  CPI 同比: {v:.2f}% ({d})")
@@ -541,7 +561,6 @@ def build_message():
             if v is not None:
                 lines.append(f"  核心 PCE 同比: {v:.2f}%")
 
-            # 通胀分项（看粘性）
             for sid, label in [
                 ('CPIENGSL', '能源'), ('CPIFABSL', '食品'),
                 ('CUSR0000SAH1', '住房'), ('CUSR0000SASLE', '核心服务')
@@ -550,12 +569,10 @@ def build_message():
                 if v is not None:
                     lines.append(f"    {label}: {v:.2f}%")
 
-            # 通胀预期
             v, d = la('MICH')
             if v is not None:
                 lines.append(f"  通胀预期(MICH): {v:.1f}% ({d})")
 
-            # 就业
             v, d = la('UNRATE')
             if v is not None:
                 lines.append(f"  失业率: {v:.1f}% ({d})")
@@ -567,7 +584,6 @@ def build_message():
             if v is not None:
                 lines.append(f"  初请: {v:,.0f} ({d})")
 
-            # --- v17 新增：制造业就业与消费者信心 ---
             sub_man = df[df['series'] == 'MANEMP'].sort_values('date')
             if len(sub_man) >= 2:
                 diff_man = float(sub_man.iloc[-1]['value']) - float(sub_man.iloc[-2]['value'])
@@ -576,9 +592,7 @@ def build_message():
             v, d = la('UMCSENT')
             if v is not None:
                 lines.append(f"  消费者信心: {v:.1f} ({d})")
-            # ----------------------------------------
 
-            # 工资
             v, _ = la('CES0500000003')
             if v is not None:
                 lines.append(f"  平均时薪: ${v:.2f}")
@@ -586,7 +600,6 @@ def build_message():
             if v is not None:
                 lines.append(f"  雇佣成本 ECI: {v:.2f}")
 
-            # 收益率曲线
             t2, _ = la('DGS2')
             t10, _ = la('DGS10')
             t30, _ = la('DGS30')
@@ -613,7 +626,6 @@ def build_message():
             if v is not None:
                 lines.append(f"  10Y Breakeven: {v:.2f}%")
 
-            # 信用利差
             v, _ = la('BAMLH0A0HYM2')
             if v is not None:
                 lines.append(f"  HY OAS: {v*100:.0f}bp")
@@ -655,7 +667,6 @@ def build_message():
             if cp is not None and tb is not None:
                 lines.append(f"  CP-Tbill: {(cp-tb)*100:+.0f}bp")
             
-            # --- v17.1 修复：从流动性段取 SOFR，减 FRED 的 IORB ---
             iorb_val, _ = la('IORB')
             sofr_nyfed = None
             if p_nyfed.exists():
@@ -666,7 +677,6 @@ def build_message():
             
             if sofr_nyfed is not None and iorb_val is not None:
                 lines.append(f"  SOFR-IORB: {(sofr_nyfed-iorb_val)*100:+.1f}bp")
-            # --------------------------------------------------
 
             cp60, _ = la('RIFSPPNA2P2D60NB')
             if cp60 is not None and tb is not None:

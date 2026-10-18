@@ -1,6 +1,6 @@
 import requests
-import time
 import pandas as pd
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +18,13 @@ def fetch_depth(coin='BTC'):
         time.sleep(2)
     return None
 
+def calc_depth_metrics(data, levels=20):
+    if not data or 'levels' not in data:
+        return None
+    bids, asks = data['levels']
+    if not bids or not asks:
+        return None
+
     best_bid = float(bids[0]['px'])
     best_ask = float(asks[0]['px'])
     mid = (best_bid + best_ask) / 2
@@ -28,15 +35,12 @@ def fetch_depth(coin='BTC'):
     total_bid = sum(bid_sizes)
     total_ask = sum(ask_sizes)
 
-    # 距现价 1%、2%、5% 的累计深度
     def depth_within(pct):
         bid_sum = sum(float(b['sz']) for b in bids if float(b['px']) >= mid * (1 - pct))
         ask_sum = sum(float(a['sz']) for a in asks if float(a['px']) <= mid * (1 + pct))
         return bid_sum, ask_sum
 
-    d1_bid, d1_ask = depth_within(0.01)
     d2_bid, d2_ask = depth_within(0.02)
-    d5_bid, d5_ask = depth_within(0.05)
 
     return {
         'coin': data.get('coin', ''),
@@ -44,9 +48,7 @@ def fetch_depth(coin='BTC'):
         'total_bid': total_bid,
         'total_ask': total_ask,
         'bid_ask_imbalance': (total_bid - total_ask) / (total_bid + total_ask) if (total_bid + total_ask) > 0 else 0,
-        'd1_bid': d1_bid, 'd1_ask': d1_ask,
         'd2_bid': d2_bid, 'd2_ask': d2_ask,
-        'd5_bid': d5_bid, 'd5_ask': d5_ask,
         'as_of': datetime.now(timezone.utc).isoformat(),
     }
 
