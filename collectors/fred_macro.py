@@ -65,16 +65,26 @@ SERIES = [
     'BAMLC0A4CBBB',
     'T10Y3M',
     'DRTSCILM',
-        # === 通胀（实际） ===
+    # 通胀 + 就业（基础）
     'CPIAUCSL',
     'CPILFESL',
     'PCEPI',
     'PCEPILFE',
-    # === 就业 ===
     'PAYEMS',
     'UNRATE',
     'ICSA',
-    'DEXJPUS',
+    # 通胀分项（看粘性从哪来）
+    'CPIENGSL',
+    'CPIFABSL',
+    'CUSR0000SAH1',
+    'CUSR0000SASLE',
+    # 工资与预期（验证核心通胀）
+    'CES0500000003',
+    'ECIALLCIV',
+    'MICH',
+    # 景气度（交叉验证非农）
+    'NAPM',
+    'NAPMNOI',
 ]
 
 

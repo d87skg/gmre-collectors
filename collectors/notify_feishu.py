@@ -1,10 +1,12 @@
 from dotenv import load_dotenv
 load_dotenv(r'D:\HGZC\.env')
-"""
-飞书机器人通知（v14，2026-10-17）
-- 新增 HY OAS 20D 变化（S6 CREDIT_STRESS 输入）
-- 新增 USDJPY（Chain B carry trade）
-"""
+# 飞书机器人通知（v15，2026-10-18）
+# - 新增：通胀分项（能源/食品/住房/核心服务）
+# - 新增：工资（AHE/ECI）+ 通胀预期（MICH）
+# - 新增：ISM PMI（制造业/服务业）
+# - 修改：USDJPY 改 Yahoo 实时源
+# - 修改：USDE 独立高精度锚定监控（4 位小数）
+# - 删除：新兴市场外储段
 import os
 import sys
 import time
@@ -126,7 +128,7 @@ def build_message():
             df = pd.read_csv(p).sort_values('date')
             if not df.empty:
                 latest = df.iloc[-1]
-                lines.append(f"🇪🇺 欧元区 HICP ({latest['date']}, Eurostat, 月度)")
+                lines.append(f"🇪🇺 欧元区 HICP ({latest['date']}, Eurostat, 历史参考)")
                 lines.append(f"  CPI 年率: {float(latest['value']):.1f}%")
                 lines.append("")
         except Exception as e:
@@ -192,7 +194,7 @@ def build_message():
             lines.append(f"🌐 全市场失败: {e}")
             lines.append("")
 
-    # === CoinGecko 稳定币细分 ===
+    # === CoinGecko 稳定币细分（USDE 高精度） ===
     p = Path('data/coingecko_stablecoins.csv')
     if p.exists():
         try:
@@ -204,9 +206,19 @@ def build_message():
                 sym = str(r['symbol'])
                 mc = float(r['market_cap_usd']) / 1e9
                 price = r.get('current_price')
-                if pd.notna(price) and abs(float(price) - 1.0) > 0.001:
-                    dev = (float(price) - 1.0) * 100
-                    lines.append(f"  {sym}: ${mc:.2f}B ⚠️ 锚定 {dev:+.2f}%")
+                if pd.notna(price):
+                    price = float(price)
+                    if sym == 'USDE':
+                        dev = (price - 1.0) * 100
+                        if abs(dev) > 0.01:
+                            lines.append(f"  USDE: ${mc:.2f}B 🚨 锚定 {dev:+.4f}%")
+                        else:
+                            lines.append(f"  USDE: ${mc:.2f}B 锚定 {dev:+.4f}%")
+                    elif abs(price - 1.0) > 0.001:
+                        dev = (price - 1.0) * 100
+                        lines.append(f"  {sym}: ${mc:.2f}B ⚠️ 锚定 {dev:+.2f}%")
+                    else:
+                        lines.append(f"  {sym}: ${mc:.2f}B")
                 else:
                     lines.append(f"  {sym}: ${mc:.2f}B")
             lines.append("")
@@ -240,7 +252,6 @@ def build_message():
             df = df[df['date'] == latest]
             df = df.sort_values(['index', 'open_interest_usd'], ascending=[True, False])
 
-            # 过滤 FR 异常（|FR| > 30%）
             if 'funding_rate_annual_pct' in df.columns:
                 df_clean = df[df['funding_rate_annual_pct'].abs() < 30].copy()
                 df_abnormal = df[df['funding_rate_annual_pct'].abs() >= 30]
@@ -260,7 +271,6 @@ def build_message():
             if not df_abnormal.empty:
                 lines.append(f"  ⚠️ 已过滤 {len(df_abnormal)} 条 FR 异常（|FR| > 30%）")
 
-            # 读 HL FR
             hl_frs = {}
             hl_p = Path('data/hyperliquid.csv')
             if hl_p.exists():
@@ -273,7 +283,6 @@ def build_message():
                 except Exception:
                     pass
 
-            # 跨所差异（用 df_clean 计算，避免异常值污染）
             for idx in ['BTC', 'ETH']:
                 sub = df_clean[df_clean['index'] == idx]
                 frs = list(sub['funding_rate_annual_pct'].dropna())
@@ -445,6 +454,20 @@ def build_message():
             if v is not None:
                 lines.append(f"  核心 PCE 同比: {v:.2f}%")
 
+            # 通胀分项（看粘性）
+            for sid, label in [
+                ('CPIENGSL', '能源'), ('CPIFABSL', '食品'),
+                ('CUSR0000SAH1', '住房'), ('CUSR0000SASLE', '核心服务')
+            ]:
+                v, _ = yoy(sid)
+                if v is not None:
+                    lines.append(f"    {label}: {v:.2f}%")
+
+            # 通胀预期
+            v, d = la('MICH')
+            if v is not None:
+                lines.append(f"  通胀预期(MICH): {v:.1f}% ({d})")
+
             # 就业
             v, d = la('UNRATE')
             if v is not None:
@@ -457,10 +480,21 @@ def build_message():
             if v is not None:
                 lines.append(f"  初请: {v:,.0f} ({d})")
 
-            # USDJPY（Chain B）
-            v, d = la('DEXJPUS')
+            # 工资
+            v, _ = la('CES0500000003')
             if v is not None:
-                lines.append(f"  USDJPY: {v:.2f} ({d})")
+                lines.append(f"  平均时薪: ${v:.2f}")
+            v, _ = la('ECIALLCIV')
+            if v is not None:
+                lines.append(f"  雇佣成本 ECI: {v:.2f}")
+
+            # PMI
+            v, d = la('NAPM')
+            if v is not None:
+                lines.append(f"  ISM 制造业: {v:.1f} ({d})")
+            v, d = la('NAPMNOI')
+            if v is not None:
+                lines.append(f"  ISM 服务业: {v:.1f} ({d})")
 
             # 收益率曲线
             t2, _ = la('DGS2')
@@ -489,12 +523,11 @@ def build_message():
             if v is not None:
                 lines.append(f"  10Y Breakeven: {v:.2f}%")
 
-            # 信用利差（整体 + 分层）
+            # 信用利差
             v, _ = la('BAMLH0A0HYM2')
             if v is not None:
                 lines.append(f"  HY OAS: {v*100:.0f}bp")
 
-            # HY OAS 20D 变化（S6 CREDIT_STRESS 输入）
             sub_hy = df[df['series'] == 'BAMLH0A0HYM2'].sort_values('date')
             if len(sub_hy) >= 21:
                 cur_hy = float(sub_hy.iloc[-1]['value'])
@@ -711,31 +744,6 @@ def build_message():
                 lines.append("")
         except Exception as e:
             lines.append(f"{title} 失败: {e}")
-            lines.append("")
-
-    # === World Bank 外储 ===
-    p = Path('data/worldbank_reserves.csv')
-    if p.exists():
-        try:
-            df = pd.read_csv(p)
-            if not df.empty:
-                latest = df['date'].max()
-                df = df[df['date'] == latest].sort_values('series')
-                lines.append(f"🌏 新兴市场外储 ({latest}, World Bank, 年度)")
-                seen = set()
-                for _, r in df.iterrows():
-                    sid = str(r['series']).replace('RESERVES_', '')
-                    if sid in seen:
-                        continue
-                    seen.add(sid)
-                    v = float(r['value'])
-                    if v > 100:
-                        lines.append(f"  {sid}: ${v:.0f}B")
-                    else:
-                        lines.append(f"  {sid}: ${v:.2f}B")
-                lines.append("")
-        except Exception as e:
-            lines.append(f"🌏 WorldBank 失败: {e}")
             lines.append("")
 
     # === 时间戳 ===

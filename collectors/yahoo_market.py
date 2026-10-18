@@ -22,6 +22,7 @@ SYMBOLS = {
     '^NDX':      'NDX',
     'TLT':       'TLT',
     'HG=F':      'COPPER',
+    'JPY=X':     'USDJPY',
 }
 
 
