@@ -10,6 +10,7 @@ except ImportError:
 # - 新增：HL 订单簿深度 (清算燃料)
 # - 新增：HYG/LQD 信用市场即时代理
 # - 新增：Coinbase 溢价与 Bitget FR (跨所验证)
+# - 新增：智能盘面总结生成
 import os
 import sys
 import time
@@ -923,6 +924,51 @@ def build_message():
         except Exception as e:
             lines.append(f"{title} 失败: {e}")
             lines.append("")
+
+    # === 智能盘面总结生成 ===
+    summary = "🤖 [系统总结] "
+    try:
+        # 1. 检查跨所杠杆撕裂
+        p_deriv = Path('data/coingecko_derivatives.csv')
+        if p_deriv.exists():
+            df_d = pd.read_csv(p_deriv).sort_values('date')
+            df_d = df_d[df_d['date'] == df_d['date'].max()]
+            btc_frs = df_d[df_d['index'] == 'BTC']['funding_rate_annual_pct'].dropna()
+            if len(btc_frs) >= 2:
+                fr_diff = btc_frs.max() - btc_frs.min()
+                if fr_diff > 10:
+                    summary += f"杠杆撕裂严重({fr_diff:.1f}%)；"
+
+        # 2. 检查期权下行保护
+        p_skew = Path('data/deribit_skew.csv')
+        if p_skew.exists():
+            df_s = pd.read_csv(p_skew)
+            btc_skew = df_s[df_s['currency'] == 'BTC']
+            if not btc_skew.empty:
+                rr25 = float(btc_skew.iloc[0]['rr25'])
+                if rr25 < 0:
+                    summary += "期权暗藏下行保护；"
+
+        # 3. 检查信用市场
+        p_yahoo = Path('data/yahoo_market.csv')
+        if p_yahoo.exists():
+            df_y = pd.read_csv(p_yahoo)
+            latest_y = df_y['date'].max()
+            hyg_row = df_y[(df_y['date'] == latest_y) & (df_y['symbol'] == 'HYG')]
+            lqd_row = df_y[(df_y['date'] == latest_y) & (df_y['symbol'] == 'LQD')]
+            if not hyg_row.empty and not lqd_row.empty:
+                hyg = float(hyg_row.iloc[0]['value'])
+                lqd = float(lqd_row.iloc[0]['value'])
+                if (hyg/lqd) < 0.75:
+                    summary += "信用市场承压；"
+    except Exception:
+        pass
+
+    summary += "建议保持低仓位，等待极端杠杆出清。"
+    
+    # 把总结插到最前面（标题之后）
+    lines.insert(2, summary)
+    lines.insert(3, "")
 
     # === 时间戳 ===
     now_utc = datetime.now(timezone.utc)
