@@ -5,8 +5,7 @@ except ImportError:
     pass
 # 飞书机器人通知（v22 全资产宏观雷达版）
 # - 核心升级：机构级全资产宏观引擎判定
-# - 包含：宏观体制、流动性状态、跨资产基调、尾部风险、战术建议
-# - 保留：期权信号、HL深度、Coinbase溢价、HYG/LQD、链上估值等全量数据
+# - 包含：多空博弈、Coinbase溢价、宏观体制、期权偏斜、订单簿深度等
 import os
 import sys
 import time
