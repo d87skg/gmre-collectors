@@ -3,13 +3,9 @@ try:
     load_dotenv(r'D:\HGZC\.env')
 except ImportError:
     pass
-# 飞书机器人通知（v15，2026-10-18）
-# - 新增：通胀分项（能源/食品/住房/核心服务）
-# - 新增：工资（AHE/ECI）+ 通胀预期（MICH）
-# - 新增：ISM PMI（制造业/服务业）
-# - 修改：USDJPY 改 Yahoo 实时源
-# - 修改：USDE 独立高精度锚定监控（4 位小数）
-# - 删除：新兴市场外储段
+# 飞书机器人通知（v16，2026-10-18）
+# - 新增：USDJPY 周末备注
+# - 新增：USDS 常规监控，USDG/PYUSD/RLUSD 显示偏离，USDD/GHO 不展示
 import os
 import sys
 import time
@@ -197,7 +193,7 @@ def build_message():
             lines.append(f"🌐 全市场失败: {e}")
             lines.append("")
 
-    # === CoinGecko 稳定币细分（USDE 高精度） ===
+    # === CoinGecko 稳定币细分（分层展示） ===
     p = Path('data/coingecko_stablecoins.csv')
     if p.exists():
         try:
@@ -205,23 +201,34 @@ def build_message():
             latest = df['date'].max()
             df = df[df['date'] == latest].sort_values('market_cap_usd', ascending=False)
             lines.append(f"🪙 稳定币细分 ({latest}, CoinGecko)")
+
+            df['symbol_upper'] = df['symbol'].astype(str).str.upper()
+
             for _, r in df.iterrows():
-                sym = str(r['symbol'])
+                sym = str(r['symbol_upper'])
                 mc = float(r['market_cap_usd']) / 1e9
                 price = r.get('current_price')
+
+                # 跳过 Tier 3：只存数据，不在飞书展示
+                if sym in ('USDD', 'GHO'):
+                    continue
+
                 if pd.notna(price):
                     price = float(price)
+                    dev = (price - 1.0) * 100
+
                     if sym == 'USDE':
-                        dev = (price - 1.0) * 100
                         if abs(dev) > 0.01:
                             lines.append(f"  USDE: ${mc:.2f}B 🚨 锚定 {dev:+.4f}%")
                         else:
                             lines.append(f"  USDE: ${mc:.2f}B 锚定 {dev:+.4f}%")
-                    elif abs(price - 1.0) > 0.001:
-                        dev = (price - 1.0) * 100
-                        lines.append(f"  {sym}: ${mc:.2f}B ⚠️ 锚定 {dev:+.2f}%")
-                    else:
-                        lines.append(f"  {sym}: ${mc:.2f}B")
+                    elif sym in ('USDT', 'USDC', 'DAI', 'FDUSD', 'USDS'):
+                        if abs(dev) > 0.1:
+                            lines.append(f"  {sym}: ${mc:.2f}B ⚠️ 锚定 {dev:+.2f}%")
+                        else:
+                            lines.append(f"  {sym}: ${mc:.2f}B")
+                    elif sym in ('USDG', 'PYUSD', 'RLUSD'):
+                        lines.append(f"  {sym}: ${mc:.2f}B 偏离 {dev:+.2f}%")
                 else:
                     lines.append(f"  {sym}: ${mc:.2f}B")
             lines.append("")
@@ -301,7 +308,7 @@ def build_message():
             lines.append(f"📊 CG 衍生品失败: {e}")
             lines.append("")
 
-    # === Yahoo ===
+    # === Yahoo（含 USDJPY 周末备注） ===
     p = Path('data/yahoo_market.csv')
     if p.exists():
         try:
@@ -309,6 +316,11 @@ def build_message():
             latest_date = df['date'].max()
             df = df[df['date'] == latest_date].sort_values('symbol')
             lines.append(f"📈 市场指标 ({latest_date})")
+
+            utc_now = datetime.now(timezone.utc)
+            is_weekend = utc_now.weekday() >= 5
+            weekend_note = " (周末沿用周五收盘)" if is_weekend else ""
+
             for _, r in df.iterrows():
                 sym = str(r['symbol'])
                 v = float(r['value'])
@@ -316,6 +328,8 @@ def build_message():
                     lines.append(f"  {sym}: ${v:,.2f}")
                 elif sym == 'NDX':
                     lines.append(f"  {sym}: {v:,.1f}")
+                elif sym == 'USDJPY':
+                    lines.append(f"  {sym}: {v:.2f}{weekend_note}")
                 else:
                     lines.append(f"  {sym}: {v:.2f}")
 

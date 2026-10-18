@@ -12,7 +12,19 @@ from pathlib import Path
 OUT = Path('data/coingecko_stablecoins.csv')
 URL = 'https://api.coingecko.com/api/v3/coins/markets'
 
-TARGETS = ['tether', 'usd-coin', 'dai', 'first-digital-usd', 'ethena-usde']
+TARGETS = [
+    'tether',            # USDT
+    'usd-coin',          # USDC
+    'usds',              # USDS (Sky/MakerDAO 升级版)
+    'dai',               # DAI
+    'first-digital-usd', # FDUSD
+    'ethena-usde',       # USDE
+    'global-dollar',     # USDG
+    'paypal-usd',        # PYUSD
+    'ripple-usd',        # RLUSD
+    'usdd',              # USDD
+    'gho'                # GHO
+]
 
 
 def main():
