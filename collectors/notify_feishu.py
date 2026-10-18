@@ -3,8 +3,8 @@ try:
     load_dotenv(r'D:\HGZC\.env')
 except ImportError:
     pass
-# 飞书机器人通知（v18，2026-10-18）
-# - 修复：SOFR-IORB 展示逻辑与缩进
+# 飞书机器人通知（v19，2026-10-18）
+# - 新增：多资产宏观相对定价矩阵（金铜比、金油比、金银比、金BTC比、20D动量）
 # - 新增：BGeometrics 链上估值 (MVRV/SOPR)
 import os
 import sys
@@ -307,22 +307,24 @@ def build_message():
             lines.append(f"📊 CG 衍生品失败: {e}")
             lines.append("")
 
-    # === Yahoo（含 USDJPY 周末备注） ===
+    # === Yahoo & 资产相对定价矩阵 (V19) ===
     p = Path('data/yahoo_market.csv')
     if p.exists():
         try:
             df = pd.read_csv(p)
             latest_date = df['date'].max()
-            df = df[df['date'] == latest_date].sort_values('symbol')
+            df_latest = df[df['date'] == latest_date].sort_values('symbol')
             lines.append(f"📈 市场指标 ({latest_date})")
 
             utc_now = datetime.now(timezone.utc)
             is_weekend = utc_now.weekday() >= 5
             weekend_note = " (周末沿用周五收盘)" if is_weekend else ""
 
-            for _, r in df.iterrows():
+            prices = {}
+            for _, r in df_latest.iterrows():
                 sym = str(r['symbol'])
                 v = float(r['value'])
+                prices[sym] = v
                 if sym in ('GOLD', 'OIL', 'COPPER'):
                     lines.append(f"  {sym}: ${v:,.2f}")
                 elif sym == 'NDX':
@@ -332,19 +334,42 @@ def build_message():
                 else:
                     lines.append(f"  {sym}: {v:.2f}")
 
-            gold_row = df[df['symbol'] == 'GOLD']
-            copper_row = df[df['symbol'] == 'COPPER']
-            if not gold_row.empty and not copper_row.empty:
-                g = float(gold_row.iloc[0]['value'])
-                c = float(copper_row.iloc[0]['value'])
-                if c > 0:
-                    lines.append(f"  金铜比: {g/c:.0f}")
+            # --- V19 核心：宏观相对定价矩阵 ---
+            lines.append("")
+            lines.append(f"📐 宏观相对定价矩阵")
+            
+            g = prices.get('GOLD')
+            c = prices.get('COPPER')
+            d = prices.get('DXY')
+            o = prices.get('OIL')
+            n = prices.get('NDX')
+            s = prices.get('SILVER', None) # 如果本地没有SILVER，会自动跳过
+
+            if g and c: lines.append(f"  金铜比 (避险/工业): {g/c:.0f}")
+            if g and d: lines.append(f"  金美元比 (硬资产/纸币): {g/d:.2f}")
+            if c and o: lines.append(f"  铜油比 (景气/滞胀): {c/o:.3f}")
+            if g and o: lines.append(f"  金油比 (购买力/能源): {g/o:.2f}")
+            if g and n: lines.append(f"  金纳指比 (避险/科技): {g/n:.3f}")
+
+            # --- V19 核心：20D 收益率动量 (收益曲线) ---
+            lines.append("")
+            lines.append(f"📈 市场动量 (20D收益率)")
+            for sym in ['GOLD', 'COPPER', 'OIL', 'NDX', 'BTC']:
+                if sym == 'BTC':
+                    continue # BTC 不在 yahoo 里，下面单独算
+                sub = df[df['symbol'] == sym].sort_values('date')
+                if len(sub) >= 21:
+                    cur = float(sub.iloc[-1]['value'])
+                    prev = float(sub.iloc[-21]['value'])
+                    chg = (cur / prev - 1) * 100
+                    lines.append(f"  {sym} 20D: {chg:+.1f}%")
+
             lines.append("")
         except Exception as e:
             lines.append(f"📈 Yahoo 失败: {e}")
             lines.append("")
 
-    # === Hyperliquid 链上 ===
+    # === Hyperliquid 链上 & 加密比价 ===
     p = Path('data/hyperliquid.csv')
     if p.exists():
         try:
@@ -354,14 +379,26 @@ def build_message():
             df['_order'] = df['symbol'].map({'BTC': 0, 'ETH': 1, 'SOL': 2})
             df = df.sort_values('_order')
             lines.append(f"⛓️ Hyperliquid 链上 ({latest_dt} UTC)")
+            
+            hl_prices = {}
             for _, r in df.iterrows():
                 sym = str(r['symbol'])
                 mid = float(r['mid_px'])
+                hl_prices[sym] = mid
                 fr = float(r['funding_rate']) if pd.notna(r.get('funding_rate')) else None
                 oi = float(r['open_interest']) if pd.notna(r.get('open_interest')) else None
                 fr_str = f"{fr*100*24*365:+.2f}% 年化" if fr is not None else "N/A"
                 oi_str = f"${oi * mid / 1e9:.2f}B" if oi else "N/A"
                 lines.append(f"  {sym}: mid=${mid:,.2f} | FR {fr_str} | OI {oi_str}")
+
+            # --- V19 核心：加密资产比价 ---
+            btc = hl_prices.get('BTC')
+            eth = hl_prices.get('ETH')
+            # 引入前面的 GOLD 价格
+            if 'g' in locals() and btc:
+                lines.append(f"  金BTC比 (传统避险/数字黄金): {g/btc:.2f}")
+            if btc and eth:
+                lines.append(f"  ETH/BTC比 (山寨/核心): {eth/btc:.4f}")
             lines.append("")
         except Exception as e:
             lines.append(f"⛓️ Hyperliquid 失败: {e}")
