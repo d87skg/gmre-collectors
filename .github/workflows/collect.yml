@@ -34,6 +34,8 @@ jobs:
           python collectors/bgeometrics_onchain.py || echo "BGeometrics failed"
           python collectors/deribit_skew.py || echo "Deribit skew failed"
           python collectors/hyperliquid_depth.py || echo "HL depth failed"
+          python collectors/binance_sentiment.py || echo "Binance sentiment failed"
+          python collectors/us_institution.py || echo "US inst failed"
           python collectors/cftc_socrata.py || echo "CFTC failed"
           python collectors/bis_cbpol.py || echo "BIS failed"
           python collectors/ecb_rates.py || echo "ECB failed"
@@ -52,14 +54,12 @@ jobs:
           python collectors/nyfed_rates.py || echo "NY Fed failed"
           python collectors/treasury_tga.py || echo "TGA failed"
           python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
-          python collectors/us_institution.py || echo "US inst failed"
           python collectors/coingecko_global.py || echo "CG global failed"
           python collectors/coingecko_stablecoins.py || echo "CG stables failed"
           python collectors/coingecko_exchange_vol.py || echo "CG exvol failed"
           python collectors/coingecko_derivatives.py || echo "CG derivatives failed"
           python collectors/hyperliquid_mark.py || echo "Hyperliquid failed"
           python collectors/worldbank_reserves.py || echo "WorldBank failed"
-          python collectors/binance_sentiment.py || echo "Binance sentiment failed"
 
       - name: List data
         run: ls -la data/
