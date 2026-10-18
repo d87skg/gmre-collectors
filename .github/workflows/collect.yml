@@ -30,7 +30,9 @@ jobs:
         run: |
           mkdir -p data/
           python collectors/cftc_socrata.py || echo "CFTC failed"
+          python collectors/defillama_flows.py || echo "DefiLlama flows failed"
           python collectors/deribit_skew.py || echo "Deribit skew failed"
+          python collectors/hyperliquid_depth.py || echo "HL depth failed"
           python collectors/bis_cbpol.py || echo "BIS failed"
           python collectors/bgeometrics_onchain.py || echo "BGeometrics failed"
           python collectors/ecb_rates.py || echo "ECB failed"
