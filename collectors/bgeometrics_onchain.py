@@ -1,5 +1,6 @@
 import os
 import requests
+import time
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
@@ -13,14 +14,16 @@ METRICS = ['mvrv', 'sopr', 'realized-price']
 def fetch_metric(metric):
     url = f'{BASE_URL}/{metric}'
     params = {'token': TOKEN}
-    try:
-        res = requests.get(url, params=params, timeout=30)
-        if res.status_code == 200:
-            return res.json()
-        else:
-            print(f'  {metric} 失败: HTTP {res.status_code} - {res.text[:100]}')
-    except Exception as e:
-        print(f'  {metric} 异常: {e}')
+    for attempt in range(3): # 最多重试3次
+        try:
+            res = requests.get(url, params=params, timeout=30)
+            if res.status_code == 200:
+                return res.json()
+            else:
+                print(f'  {metric} 失败: HTTP {res.status_code} - {res.text[:100]}')
+        except Exception as e:
+            print(f'  {metric} 异常: {e}')
+        time.sleep(3) # 失败等 3 秒再试
     return None
 
 def main():

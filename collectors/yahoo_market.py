@@ -23,6 +23,8 @@ SYMBOLS = {
     'TLT':       'TLT',
     'HG=F':      'COPPER',
     'JPY=X':     'USDJPY',
+    'HYG':       'HYG',  # 新增：高收益债 ETF
+    'LQD':       'LQD',  # 新增：投资级债 ETF
 }
 
 

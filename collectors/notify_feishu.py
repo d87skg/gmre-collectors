@@ -3,9 +3,11 @@ try:
     load_dotenv(r'D:\HGZC\.env')
 except ImportError:
     pass
-# 飞书机器人通知（v19，2026-10-18）
-# - 新增：多资产宏观相对定价矩阵（金铜比、金油比、金银比、金BTC比、20D动量）
-# - 新增：BGeometrics 链上估值 (MVRV/SOPR)
+# 飞书机器人通知（v20，2026-10-18）
+# - 新增：期权信号 (RR25/PCR)
+# - 新增：稳定币净流量 (DefiLlama)
+# - 新增：HL 订单簿深度 (清算燃料)
+# - 新增：HYG/LQD 信用市场即时代理
 import os
 import sys
 import time
@@ -50,6 +52,12 @@ def calc_cot_zscore(df):
 
 def build_message():
     lines = ["📊 GMRE 数据更新", ""]
+    lines.append(f"⚠️ 数据时效性提示：")
+    lines.append(f"  实时 (T+0): 加密价格、衍生品 FR/OI、期权信号、HL深度")
+    lines.append(f"  滞后 (T+1): Yahoo 资产价格、美股 ETF")
+    lines.append(f"  滞后 (周/月): FRED 宏观、CFTC 持仓、BGeometrics 链上估值")
+    lines.append("")
+
 
     # === CFTC COT ===
     p = Path('data/cftc_cot.csv')
@@ -307,7 +315,7 @@ def build_message():
             lines.append(f"📊 CG 衍生品失败: {e}")
             lines.append("")
 
-    # === Yahoo & 资产相对定价矩阵 (V19) ===
+    # === Yahoo & 资产相对定价矩阵 (V19 & V20) ===
     p = Path('data/yahoo_market.csv')
     if p.exists():
         try:
@@ -350,6 +358,13 @@ def build_message():
             if c and o: lines.append(f"  铜油比 (景气/滞胀): {c/o:.3f}")
             if g and o: lines.append(f"  金油比 (购买力/能源): {g/o:.2f}")
             if g and n: lines.append(f"  金纳指比 (避险/科技): {g/n:.3f}")
+
+            # --- V20 新增：信用风险代理 HYG/LQD ---
+            hyg_row = prices.get('HYG')
+            lqd_row = prices.get('LQD')
+            if hyg_row and lqd_row:
+                if lqd_row > 0:
+                    lines.append(f"  HYG/LQD (信用/投资级): {hyg_row/lqd_row:.3f}")
 
             # --- V19 核心：20D 收益率动量 (收益曲线) ---
             lines.append("")
@@ -402,6 +417,25 @@ def build_message():
             lines.append("")
         except Exception as e:
             lines.append(f"⛓️ Hyperliquid 失败: {e}")
+            lines.append("")
+
+    # === Hyperliquid 订单簿深度 (V19.5 新增) ===
+    p = Path('data/hyperliquid_depth.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            if not df.empty:
+                lines.append(f"📊 HL 订单簿深度 (20档)")
+                for _, r in df.iterrows():
+                    coin = str(r['coin'])
+                    imbalance = float(r['bid_ask_imbalance'])
+                    d2_b = float(r['d2_bid'])
+                    d2_a = float(r['d2_ask'])
+                    flag = " ⚠️ 卖压厚" if imbalance < -0.2 else (" ⚠️ 买盘薄" if imbalance < -0.1 else "")
+                    lines.append(f"  {coin}: 2%内买盘 {d2_b:.1f} / 卖盘 {d2_a:.1f} | 不平衡 {imbalance:+.3f}{flag}")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"📊 HL 深度失败: {e}")
             lines.append("")
 
     # === Hyperliquid 清算 ===
@@ -670,6 +704,24 @@ def build_message():
             lines.append(f"🪙 稳定币失败: {e}")
             lines.append("")
 
+    # === 稳定币 Mint/Burn 流量 (V19) ===
+    p = Path('data/defillama_flows.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            snap = df[df['source'] == 'flow_snapshot'].copy()
+            if not snap.empty:
+                lines.append(f"💧 稳定币净流量 (24h, DefiLlama)")
+                for _, r in snap.sort_values('net_flow_24h', ascending=False).iterrows():
+                    sym = str(r['symbol'])
+                    flow = float(r['net_flow_24h']) / 1e9
+                    direction = "🟢 铸造" if flow > 0 else "🔴 赎回"
+                    lines.append(f"  {sym}: {flow:+.3f}B {direction}")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"💧 稳定币流量失败: {e}")
+            lines.append("")
+
     # === Deribit / OKX ===
     for fname, title in [
         ('deribit_funding.csv', '💰 Deribit 永续 Funding'),
@@ -736,6 +788,29 @@ def build_message():
             lines.append("")
         except Exception as e:
             lines.append(f"📉 DVOL 失败: {e}")
+            lines.append("")
+
+    # === Deribit 期权信号 (V18.5) ===
+    p = Path('data/deribit_skew.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            if not df.empty:
+                lines.append(f"📐 期权信号 (Deribit, 25Δ)")
+                for _, r in df.iterrows():
+                    cur = str(r['currency'])
+                    rr = float(r['rr25'])
+                    pcr = float(r['pcr']) if pd.notna(r.get('pcr')) else None
+                    term = float(r['term_ratio']) if pd.notna(r.get('term_ratio')) else None
+                    rr_flag = " ⚠️ 负偏斜" if rr < -3 else ""
+                    lines.append(f"  {cur} RR25: {rr:+.2f}%{rr_flag}")
+                    if pcr is not None:
+                        lines.append(f"    PCR: {pcr:.3f}")
+                    if term is not None:
+                        lines.append(f"    期限结构: {term:.3f} (>1=近月溢价)")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"📐 期权信号失败: {e}")
             lines.append("")
 
     # === On-chain ===
