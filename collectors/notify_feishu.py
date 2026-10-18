@@ -396,6 +396,26 @@ def build_message():
             lines.append(f"🇺🇸 机构指标失败: {e}")
             lines.append("")
 
+    # === Binance 多空博弈 ===
+    p = Path('data/binance_sentiment.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p)
+            lines.append(f"⚔️ Binance 资金多空博弈")
+            for _, r in df.iterrows():
+                m = str(r['metric'])
+                v = float(r['value'])
+                if m == 'RETAIL_LONG_SHORT_RATIO':
+                    bias = "偏多" if v > 1 else "偏空"
+                    lines.append(f"  散户人数比: {v:.2f} ({bias}) | {r['extra']}")
+                elif m == 'TOP_LONG_SHORT_RATIO':
+                    bias = "偏多" if v > 1 else "偏空"
+                    lines.append(f"  大户持仓比: {v:.2f} ({bias}) | {r['extra']}")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"⚔️ 多空博弈数据失败: {e}")
+            lines.append("")
+
     # === Hyperliquid 链上 & 加密比价 ===
     p = Path('data/hyperliquid.csv')
     if p.exists():

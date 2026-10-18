@@ -59,6 +59,7 @@ jobs:
           python collectors/coingecko_derivatives.py || echo "CG derivatives failed"
           python collectors/hyperliquid_mark.py || echo "Hyperliquid failed"
           python collectors/worldbank_reserves.py || echo "WorldBank failed"
+          python collectors/binance_sentiment.py || echo "Binance sentiment failed"
 
       - name: List data
         run: ls -la data/
