@@ -27,20 +27,14 @@ jobs:
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           BGEOMETRICS_TOKEN: ${{ secrets.BGEOMETRICS_TOKEN }}
-                run: |
+        run: |
           mkdir -p data/
-          # 优先执行核心宏观与易失败接口
           python collectors/fred_macro.py || echo "FRED failed"
           python collectors/yahoo_market.py || echo "Yahoo failed"
           python collectors/bgeometrics_onchain.py || echo "BGeometrics failed"
           python collectors/deribit_skew.py || echo "Deribit skew failed"
           python collectors/hyperliquid_depth.py || echo "HL depth failed"
-          
-          # 其次执行常规采集
           python collectors/cftc_socrata.py || echo "CFTC failed"
-          python collectors/defillama_flows.py || echo "DefiLlama flows failed"
-          python collectors/deribit_skew.py || echo "Deribit skew failed"
-          python collectors/hyperliquid_depth.py || echo "HL depth failed"
           python collectors/bis_cbpol.py || echo "BIS failed"
           python collectors/ecb_rates.py || echo "ECB failed"
           python collectors/eurostat_hicp.py || echo "Eurostat failed"
@@ -57,8 +51,6 @@ jobs:
           python collectors/okx_liquidation.py || echo "OKX liq failed"
           python collectors/nyfed_rates.py || echo "NY Fed failed"
           python collectors/treasury_tga.py || echo "TGA failed"
-          
-          # 最后执行大体积/易超时的数据源
           python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
           python collectors/defillama_flows.py || echo "DefiLlama flows failed"
           python collectors/coingecko_global.py || echo "CG global failed"
