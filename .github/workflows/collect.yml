@@ -26,10 +26,12 @@ jobs:
       - name: Run collectors
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          BGEOMETRICS_TOKEN: ${{ secrets.BGEOMETRICS_TOKEN }}
         run: |
           mkdir -p data/
           python collectors/cftc_socrata.py || echo "CFTC failed"
           python collectors/bis_cbpol.py || echo "BIS failed"
+          python collectors/bgeometrics_onchain.py || echo "BGeometrics failed"
           python collectors/ecb_rates.py || echo "ECB failed"
           python collectors/eurostat_hicp.py || echo "Eurostat failed"
           python collectors/boj_rates.py || echo "BOJ failed"

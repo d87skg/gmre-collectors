@@ -3,9 +3,9 @@ try:
     load_dotenv(r'D:\HGZC\.env')
 except ImportError:
     pass
-# 飞书机器人通知（v17，2026-10-18）
-# - 新增：USDJPY 周末备注
-# - 新增：USDS 常规监控，USDG/PYUSD/RLUSD 显示偏离，USDD/GHO 不展示
+# 飞书机器人通知（v18，2026-10-18）
+# - 修复：SOFR-IORB 展示逻辑与缩进
+# - 新增：BGeometrics 链上估值 (MVRV/SOPR)
 import os
 import sys
 import time
@@ -209,7 +209,6 @@ def build_message():
                 mc = float(r['market_cap_usd']) / 1e9
                 price = r.get('current_price')
 
-                # 跳过 Tier 3：只存数据，不在飞书展示
                 if sym in ('USDD', 'GHO'):
                     continue
 
@@ -516,14 +515,6 @@ def build_message():
             if v is not None:
                 lines.append(f"  雇佣成本 ECI: {v:.2f}")
 
-            # PMI
-            v, d = la('NAPM')
-            if v is not None:
-                lines.append(f"  ISM 制造业: {v:.1f} ({d})")
-            v, d = la('NAPMNOI')
-            if v is not None:
-                lines.append(f"  ISM 服务业: {v:.1f} ({d})")
-
             # 收益率曲线
             t2, _ = la('DGS2')
             t10, _ = la('DGS10')
@@ -592,12 +583,20 @@ def build_message():
             tb, _ = la('TB3MS')
             if cp is not None and tb is not None:
                 lines.append(f"  CP-Tbill: {(cp-tb)*100:+.0f}bp")
-            # --- v17 新增：回购市场压力 ---
-            sofr_val, _ = la('SOFR')
+            
+            # --- v17.1 修复：从流动性段取 SOFR，减 FRED 的 IORB ---
             iorb_val, _ = la('IORB')
-            if sofr_val is not None and iorb_val is not None:
-                lines.append(f"  SOFR-IORB: {(sofr_val-iorb_val)*100:+.1f}bp")
-            # ----------------------------
+            sofr_nyfed = None
+            if p_nyfed.exists():
+                df_nf = pd.read_csv(p_nyfed)
+                sub_nf = df_nf[df_nf['series'] == 'SOFR'].sort_values('date')
+                if not sub_nf.empty:
+                    sofr_nyfed = float(sub_nf.iloc[-1]['value'])
+            
+            if sofr_nyfed is not None and iorb_val is not None:
+                lines.append(f"  SOFR-IORB: {(sofr_nyfed-iorb_val)*100:+.1f}bp")
+            # --------------------------------------------------
+
             cp60, _ = la('RIFSPPNA2P2D60NB')
             if cp60 is not None and tb is not None:
                 lines.append(f"  CP60-Tbill: {(cp60-tb)*100:+.0f}bp")
@@ -723,6 +722,29 @@ def build_message():
                 lines.append("")
         except Exception as e:
             lines.append(f"⛓️ On-chain 失败: {e}")
+            lines.append("")
+
+    # === BGeometrics 链上估值 (V18 新增) ===
+    p = Path('data/bgeometrics_onchain.csv')
+    if p.exists():
+        try:
+            df = pd.read_csv(p).sort_values('date')
+            if not df.empty:
+                latest_date = df['date'].max()
+                df_latest = df[df['date'] == latest_date]
+                lines.append(f"🔗 链上估值 ({latest_date}, BGeometrics)")
+                for _, r in df_latest.iterrows():
+                    metric = str(r['metric'])
+                    val = float(r['value'])
+                    if metric == 'MVRV':
+                        lines.append(f"  MVRV: {val:.3f} (周期位置：>3.5 顶部 / <1.0 底部)")
+                    elif metric == 'SOPR':
+                        lines.append(f"  SOPR: {val:.4f} (>1 盈利卖出 / <1 亏损割肉)")
+                    elif metric == 'REALIZED-PRICE':
+                        lines.append(f"  实现价格: ${val:,.0f}")
+                lines.append("")
+        except Exception as e:
+            lines.append(f"🔗 BGeometrics 失败: {e}")
             lines.append("")
 
     # === Fear & Greed ===
