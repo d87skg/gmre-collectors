@@ -4,14 +4,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 def get_coinbase_premium():
-    """计算 Coinbase 相对 Binance 的 BTC 现货溢价"""
+    """计算 Coinbase 相对 Binance 的 BTC 现货溢价（带伪装防封）"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     try:
-        # 获取 Coinbase 价格
-        cb_res = requests.get('https://api.coinbase.com/v2/prices/BTC-USD/spot', timeout=10)
-        cb_price = float(cb_res.json()['data']['amount'])
+        # 获取 Coinbase 价格（改用 Coinbase Exchange 的 ticker 端点，对云 IP 容忍度高一点）
+        cb_res = requests.get('https://api.exchange.coinbase.com/products/BTC-USD/ticker', headers=headers, timeout=10)
+        if cb_res.status_code == 200:
+            cb_price = float(cb_res.json()['price'])
+        else:
+            cb_res = requests.get('https://api.coinbase.com/v2/prices/BTC-USD/spot', headers=headers, timeout=10)
+            cb_price = float(cb_res.json()['data']['amount'])
         
         # 获取 Binance 价格
-        bn_res = requests.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT', timeout=10)
+        bn_res = requests.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT', headers=headers, timeout=10)
         bn_price = float(bn_res.json()['price'])
         
         premium = ((cb_price - bn_price) / bn_price) * 100
