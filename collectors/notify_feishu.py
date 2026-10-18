@@ -1,5 +1,8 @@
-from dotenv import load_dotenv
-load_dotenv(r'D:\HGZC\.env')
+try:
+    from dotenv import load_dotenv
+    load_dotenv(r'D:\HGZC\.env')
+except ImportError:
+    pass
 # 飞书机器人通知（v15，2026-10-18）
 # - 新增：通胀分项（能源/食品/住房/核心服务）
 # - 新增：工资（AHE/ECI）+ 通胀预期（MICH）
