@@ -1,153 +1,186 @@
 # -*- coding: utf-8 -*-
-"""tools/sync_feishu_snapshot.py - 从 GitHub CSV 拉取飞书快照 + 佐证
-"""
-import requests
-import sqlite3
+"""collectors/save_feishu_snapshot.py - 从飞书文本解析所有字段并写入 CSV"""
 import csv
-import io
+import os
+import re
 from datetime import datetime
 
-DB_PATH = 'data/macro.db'
-GITHUB_CSV_URL = "https://raw.githubusercontent.com/d87skg/gmre-collectors/main/data/feishu_snapshot.csv"
 
-# 飞书字段 -> (本地 series_id, 单位换算)
-FIELD_MAP = {
-    'gold':             ('GOLD_PRICE',      'direct'),
-    'oil':              ('WTI_OIL',         'direct'),
-    'dxy':              ('DXY_PROXY',       'direct'),
-    'usdjpy':           ('USD_JPY',         'direct'),
-    'vix':              ('VIX',             'direct'),
-    'hy_oas_bp':        ('HY_SPREAD',       'bp_to_decimal'),
-    'hy_ccc_bp':        ('HY_CCC_OAS',      'bp_to_decimal'),
-    'sofr':             ('SOFR',            'direct'),
-    'effr':             ('EFFR',            'direct'),
-    'rrp_b':            ('RRP_BALANCE',     'b_to_raw'),
-    'tga_b':            ('TGA_BALANCE',     'b_to_raw'),
-    'reserve_t':        ('RESERVE_BALANCE', 't_to_raw'),
-}
-
-
-def fetch_csv():
-    print(f"🔄 正在从 GitHub 拉取 feishu_snapshot.csv ...")
-    r = requests.get(f"{GITHUB_CSV_URL}?t={datetime.now().timestamp()}", timeout=15)
-    r.raise_for_status()
-    reader = csv.DictReader(io.StringIO(r.text))
-    rows = list(reader)
-    if not rows:
-        raise ValueError("CSV 为空")
-    return rows
-
-
-def convert(val, kind):
-    if val is None or val == '':
-        return None
+def _num(s):
+    """安全转 float，去掉千位分隔符"""
+    if s is None:
+        return ''
     try:
-        v = float(val)
+        return float(str(s).replace(',', ''))
     except Exception:
-        return None
-    if kind == 'direct':
-        return v
-    elif kind == 'bp_to_decimal':
-        return v / 100.0
-    elif kind == 'b_to_raw':
-        return v * 1e9
-    elif kind == 't_to_raw':
-        return v * 1e12
-    return v
+        return ''
 
 
-def save_to_snapshot_table(conn, rows, fieldnames):
-    cols = ['timestamp'] + [c for c in fieldnames if c != 'timestamp']
-    col_defs = ', '.join([f"{c} TEXT" for c in cols])
-    conn.execute(f"CREATE TABLE IF NOT EXISTS feishu_snapshot ({col_defs})")
-
-    existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(feishu_snapshot)").fetchall()]
-    for c in cols:
-        if c not in existing_cols:
-            conn.execute(f"ALTER TABLE feishu_snapshot ADD COLUMN {c} TEXT")
-
-    count = 0
-    for row in rows:
-        placeholders = ', '.join(['?'] * len(cols))
-        values = [row.get(c, '') for c in cols]
-        conn.execute(f"INSERT INTO feishu_snapshot ({', '.join(cols)}) VALUES ({placeholders})", values)
-        count += 1
-    return count
-
-
-def verify_vs_local(conn, latest_row):
-    print(f"\n{'='*72}")
-    print(f"  🔍 佐证报告：飞书值 vs 本地 observations 最新值")
-    print(f"{'='*72}\n")
-
-    deviations = []
-    for field, (series_id, kind) in FIELD_MAP.items():
-        feishu_val = convert(latest_row.get(field, ''), kind)
-        if feishu_val is None:
-            continue
-
-        row = conn.execute(
-            "SELECT timestamp, value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 1",
-            (series_id,)
-        ).fetchone()
-        if not row:
-            print(f"  ⚪ {field:20s} 飞书={feishu_val:>14.4f}  本地无 {series_id}")
-            continue
-
-        local_date, local_val = row
-        local_val_f = float(local_val)
-
-        # 若本地 < 10000 且飞书经换算 > 1e6，反向换算（本地以 B 为单位）
-        if kind in ('b_to_raw', 't_to_raw') and local_val_f < 100000:
-            feishu_val = feishu_val / 1e9 if kind == 'b_to_raw' else feishu_val / 1e12
-
-        pct_diff = abs(local_val_f - feishu_val) / abs(feishu_val) * 100 if feishu_val != 0 else 0
-
-        if pct_diff < 1:
-            flag = "✅"
-        elif pct_diff < 5:
-            flag = "🟡"
-        else:
-            flag = "🔴"
-            deviations.append((field, feishu_val, local_val_f, pct_diff, local_date))
-
-        print(f"  {flag} {field:20s} 飞书={feishu_val:>14.4f}  本地={local_val_f:>14.4f}  "
-              f"偏差={pct_diff:5.2f}%  本地日期={local_date}")
-
-    print(f"\n{'='*72}")
-    print(f"  📊 飞书独有字段（本地 observations 无对应，仅存 feishu_snapshot）")
-    print(f"{'='*72}\n")
-    feishu_only = [k for k in latest_row.keys()
-                   if k not in FIELD_MAP and k != 'timestamp' and latest_row[k] not in ('', None)]
-    for k in feishu_only[:25]:
-        print(f"  ✓  {k:28s} {latest_row[k]}")
-
-    print(f"\n{'='*72}")
-    if deviations:
-        print(f"  🔴 {len(deviations)} 个显著偏差（>5%），需要排查:")
-        for field, fv, lv, diff, ld in deviations:
-            print(f"     {field:20s} 飞书={fv:.4f} vs 本地={lv:.4f} (偏差 {diff:.1f}%, 本地 {ld})")
-    else:
-        print(f"  ✅ 所有可比对指标偏差 < 5%，本地数据与飞书一致")
-    print(f"{'='*72}\n")
-
-    return deviations
-
-
-def main():
-    rows = fetch_csv()
-    latest = rows[-1]
-    print(f"✅ 获取 {len(rows)} 条快照，最新: {latest.get('timestamp')}")
-
-    conn = sqlite3.connect(DB_PATH)
+def _int(s):
     try:
-        count = save_to_snapshot_table(conn, rows, list(latest.keys()))
-        conn.commit()
-        print(f"💾 已写入 feishu_snapshot 表: {count} 条")
-        verify_vs_local(conn, latest)
-    finally:
-        conn.close()
+        return int(str(s).replace(',', ''))
+    except Exception:
+        return ''
 
 
-if __name__ == "__main__":
-    main()
+def parse_and_save_snapshot(text):
+    """从飞书文本解析所有字段，追加到 data/feishu_snapshot.csv"""
+    d = {'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+    # ========== 市场指标 ==========
+    for sym in ['GOLD', 'OIL', 'COPPER', 'SILVER', 'WHEAT', 'NDX']:
+        m = re.search(rf'{sym}:\s*\$?([\d,]+\.?\d*)', text)
+        d[sym.lower()] = _num(m.group(1)) if m else ''
+    m = re.search(r'DXY:\s*([\d.]+)', text)
+    d['dxy'] = _num(m.group(1)) if m else ''
+    m = re.search(r'USDJPY:\s*([\d.]+)', text)
+    d['usdjpy'] = _num(m.group(1)) if m else ''
+    m = re.search(r'VIX:\s*([\d.]+)', text)
+    d['vix'] = _num(m.group(1)) if m else ''
+
+    # ========== 宏观相对定价 ==========
+    m = re.search(r'金铜比[^:]*:\s*([\d.]+)', text)
+    d['gold_copper_ratio'] = _num(m.group(1)) if m else ''
+    m = re.search(r'金美元比[^:]*:\s*([\d.]+)', text)
+    d['gold_usd_ratio'] = _num(m.group(1)) if m else ''
+    m = re.search(r'铜油比[^:]*:\s*([\d.]+)', text)
+    d['copper_oil_ratio'] = _num(m.group(1)) if m else ''
+    m = re.search(r'金油比[^:]*:\s*([\d.]+)', text)
+    d['gold_oil_ratio'] = _num(m.group(1)) if m else ''
+    m = re.search(r'金银比[^:]*:\s*([\d.]+)', text)
+    d['gold_silver_ratio'] = _num(m.group(1)) if m else ''
+    m = re.search(r'麦铜比[^:]*:\s*([\d.]+)', text)
+    d['wheat_copper_ratio'] = _num(m.group(1)) if m else ''
+
+    # ========== 信用 ==========
+    m = re.search(r'HY OAS:\s*(\d+)bp', text)
+    d['hy_oas_bp'] = _int(m.group(1)) if m else ''
+    m = re.search(r'HY OAS 20D:\s*([+-]?\d+\.?\d*)%', text)
+    d['hy_oas_20d_chg'] = _num(m.group(1)) if m else ''
+    m = re.search(r'\n\s+BB:\s*(\d+)bp', text)
+    d['hy_bb_bp'] = _int(m.group(1)) if m else ''
+    m = re.search(r'\n\s+B:\s*(\d+)bp', text)  # 注意：\s+ 排除 BB 的 B
+    d['hy_b_bp'] = _int(m.group(1)) if m else ''
+    m = re.search(r'CCC:\s*(\d+)bp', text)
+    d['hy_ccc_bp'] = _int(m.group(1)) if m else ''
+    m = re.search(r'IG OAS:\s*(\d+)bp', text)
+    d['ig_oas_bp'] = _int(m.group(1)) if m else ''
+    m = re.search(r'AAA:\s*(\d+)bp', text)
+    d['ig_aaa_bp'] = _int(m.group(1)) if m else ''
+    m = re.search(r'BBB:\s*(\d+)bp', text)
+    d['ig_bbb_bp'] = _int(m.group(1)) if m else ''
+
+    # ========== 流动性 ==========
+    m = re.search(r'SOFR:\s*([\d.]+)%', text)
+    d['sofr'] = _num(m.group(1)) if m else ''
+    m = re.search(r'EFFR:\s*([\d.]+)%', text)
+    d['effr'] = _num(m.group(1)) if m else ''
+    m = re.search(r'利差:\s*([+-]?\d+\.?\d*)bp', text)
+    d['sofr_effr_spread_bp'] = _num(m.group(1)) if m else ''
+    m = re.search(r'ON RRP:\s*\$([\d.]+)B', text)
+    d['rrp_b'] = _num(m.group(1)) if m else ''
+    m = re.search(r'TGA:\s*\$([\d.]+)B', text)
+    d['tga_b'] = _num(m.group(1)) if m else ''
+    m = re.search(r'准备金:\s*\$([\d.]+)T', text)
+    d['reserve_t'] = _num(m.group(1)) if m else ''
+
+    # ========== 机构与跨所 ==========
+    m = re.search(r'Coinbase溢价:\s*([+-]?\d+\.?\d*)%', text)
+    d['coinbase_premium'] = _num(m.group(1)) if m else ''
+    m = re.search(r'Bitget BTC FR:\s*([+-]?\d+\.?\d*)%', text)
+    d['bitget_btc_fr'] = _num(m.group(1)) if m else ''
+    m = re.search(r'BTC FR 跨所差异\s*([\d.]+)%', text)
+    d['fr_cross_diff'] = _num(m.group(1)) if m else ''
+
+    # ========== Hyperliquid ==========
+    m = re.search(r'BTC:\s*mid=\$?([\d,.]+)\s*\|\s*FR\s*([+-]?\d+\.?\d*)%\s*年化\s*\|\s*OI\s*\$([\d.]+)B', text)
+    if m:
+        d['hl_btc_mid'] = _num(m.group(1))
+        d['hl_btc_fr'] = _num(m.group(2))
+        d['hl_btc_oi_b'] = _num(m.group(3))
+    else:
+        d['hl_btc_mid'] = d['hl_btc_fr'] = d['hl_btc_oi_b'] = ''
+
+    m = re.search(r'ETH:\s*mid=\$?([\d,.]+)\s*\|\s*FR\s*([+-]?\d+\.?\d*)%\s*年化\s*\|\s*OI\s*\$([\d.]+)B', text)
+    if m:
+        d['hl_eth_mid'] = _num(m.group(1))
+        d['hl_eth_fr'] = _num(m.group(2))
+        d['hl_eth_oi_b'] = _num(m.group(3))
+    else:
+        d['hl_eth_mid'] = d['hl_eth_fr'] = d['hl_eth_oi_b'] = ''
+
+    m = re.search(r'BTC:\s*2%内买盘\s*[\d.]+\s*/\s*卖盘\s*[\d.]+\s*\|\s*不平衡\s*([+-]?\d+\.?\d*)', text)
+    d['hl_imbalance_btc'] = _num(m.group(1)) if m else ''
+    m = re.search(r'ETH:\s*2%内买盘\s*[\d.]+\s*/\s*卖盘\s*[\d.]+\s*\|\s*不平衡\s*([+-]?\d+\.?\d*)', text)
+    d['hl_imbalance_eth'] = _num(m.group(1)) if m else ''
+
+    # ========== 稳定币 ==========
+    m = re.search(r'稳定币总市值.*?\$([\d.]+)B', text, re.DOTALL)
+    d['stablecoin_mcap_b'] = _num(m.group(1)) if m else ''
+    m = re.search(r'\n\s+1d:\s*([+-]?\d+\.?\d*)B', text)
+    d['stablecoin_1d_b'] = _num(m.group(1)) if m else ''
+    m = re.search(r'\n\s+7d:\s*([+-]?\d+\.?\d*)B', text)
+    d['stablecoin_7d_b'] = _num(m.group(1)) if m else ''
+    m = re.search(r'\n\s+30d:\s*([+-]?\d+\.?\d*)B', text)
+    d['stablecoin_30d_b'] = _num(m.group(1)) if m else ''
+    m = re.search(r'USDE:.*?锚定\s*([+-]?\d+\.?\d*)%', text)
+    d['usde_peg'] = _num(m.group(1)) if m else ''
+    m = re.search(r'FDUSD:.*?锚定\s*([+-]?\d+\.?\d*)%', text)
+    d['fdusd_peg'] = _num(m.group(1)) if m else ''
+
+    # ========== 期权 ==========
+    m = re.search(r'Deribit DVOL.*?BTC:\s*([\d.]+)\s*\n\s*ETH:\s*([\d.]+)', text, re.DOTALL)
+    if m:
+        d['dvol_btc'] = _num(m.group(1))
+        d['dvol_eth'] = _num(m.group(2))
+    else:
+        d['dvol_btc'] = d['dvol_eth'] = ''
+    m = re.search(r'BTC RR25:\s*([+-]?\d+\.?\d*)%', text)
+    d['btc_rr25'] = _num(m.group(1)) if m else ''
+    m = re.search(r'ETH RR25:\s*([+-]?\d+\.?\d*)%', text)
+    d['eth_rr25'] = _num(m.group(1)) if m else ''
+
+    # ========== 链上 ==========
+    m = re.search(r'MVRV:\s*([\d.]+)', text)
+    d['mvrv'] = _num(m.group(1)) if m else ''
+    m = re.search(r'SOPR:\s*([\d.]+)', text)
+    d['sopr'] = _num(m.group(1)) if m else ''
+    m = re.search(r'活跃地址:\s*([\d,]+)', text)
+    d['btc_active_addr'] = _int(m.group(1)) if m else ''
+    m = re.search(r'算力:\s*([\d.]+)\s*EH/s', text)
+    d['btc_hashrate_eh'] = _num(m.group(1)) if m else ''
+
+    # ========== 情绪 ==========
+    m = re.search(r'(\d+)\s*-\s*(Greed|Fear|Neutral)', text)
+    d['fear_greed'] = _int(m.group(1)) if m else ''
+    m = re.search(r'BTC 市占率:\s*([\d.]+)%', text)
+    d['btc_dominance'] = _num(m.group(1)) if m else ''
+    m = re.search(r'ETH 市占率:\s*([\d.]+)%', text)
+    d['eth_dominance'] = _num(m.group(1)) if m else ''
+    m = re.search(r'TOTAL_MCAP:\s*\$([\d.]+)B', text)
+    d['total_mcap_b'] = _num(m.group(1)) if m else ''
+
+    # ========== ETF 净流 ==========
+    m = re.search(r'BTC ETF 净流.*?(\d+ \w+ \d+):\s*US\$([+-]?[\d.]+)m', text, re.DOTALL)
+    d['btc_etf_flow_usd_m'] = _num(m.group(2)) if m else ''
+    m = re.search(r'5d 滚动:\s*US\$([+-]?[\d.]+)m', text)
+    d['btc_etf_5d_usd_m'] = _num(m.group(1)) if m else ''
+    m = re.search(r'ETH ETF 净流.*?US\$([+-]?[\d.]+)m', text, re.DOTALL)
+    d['eth_etf_flow_usd_m'] = _num(m.group(1)) if m else ''
+
+    # ========== 写入 CSV ==========
+    csv_path = 'data/feishu_snapshot.csv'
+    os.makedirs('data', exist_ok=True)
+    file_exists = os.path.isfile(csv_path)
+
+    fieldnames = list(d.keys())
+    with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(d)
+
+    non_empty = sum(1 for v in d.values() if v != '')
+    print(f"✅ feishu_snapshot.csv 已更新: {csv_path}")
+    print(f"   字段数: {len(d)}, 非空字段: {non_empty}")
+    return d
