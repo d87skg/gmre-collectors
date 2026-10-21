@@ -64,6 +64,7 @@ jobs:
       - name: List data
         run: ls -la data/
 
+      # === 原有步骤：提交所有采集数据 ===
       - name: Commit data
         run: |
           git config user.name "github-actions[bot]"
@@ -76,6 +77,7 @@ jobs:
             git push || echo "Push failed"
           fi
 
+      # === 推送飞书（同时生成 feishu_snapshot.csv）===
       - name: Notify Feishu
         if: always()
         env:
@@ -83,3 +85,17 @@ jobs:
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
         run: |
           python collectors/notify_feishu.py
+
+      # === 新增：提交 feishu_snapshot.csv ===
+      - name: Commit feishu snapshot
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/feishu_snapshot.csv || true
+          if git diff --staged --quiet; then
+            echo "No snapshot changes, skipping commit"
+          else
+            git commit -m "feishu snapshot: $(date -u +%Y-%m-%d)"
+            git push || echo "Push failed"
+          fi

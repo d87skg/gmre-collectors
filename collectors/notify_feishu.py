@@ -1073,6 +1073,14 @@ def main():
     print('===== 消息内容 =====')
     print(msg)
     print('===================')
+
+    # 推送前先把文本解析成结构化 CSV（即使推送失败也保留数据）
+    try:
+        from collectors.save_feishu_snapshot import parse_and_save_snapshot
+        parse_and_save_snapshot(msg)
+    except Exception as e:
+        print(f'⚠️ 快照保存失败（不影响飞书推送）: {e}')
+
     send(msg)
 
 
