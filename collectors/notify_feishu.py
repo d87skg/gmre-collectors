@@ -1075,8 +1075,14 @@ def main():
     print('===================')
 
     # 推送前先把文本解析成结构化 CSV（即使推送失败也保留数据）
+    # 兼容两种运行方式：
+    #   python collectors/notify_feishu.py        -> sys.path[0] = collectors/
+    #   python -m collectors.notify_feishu        -> sys.path[0] = repo root
     try:
-        from collectors.save_feishu_snapshot import parse_and_save_snapshot
+        try:
+            from collectors.save_feishu_snapshot import parse_and_save_snapshot
+        except ImportError:
+            from save_feishu_snapshot import parse_and_save_snapshot
         parse_and_save_snapshot(msg)
     except Exception as e:
         print(f'⚠️ 快照保存失败（不影响飞书推送）: {e}')
