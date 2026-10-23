@@ -21,7 +21,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install pandas requests lxml html5lib curl_cffi cme-fedwatch python-dotenv
+        run: pip install pandas requests lxml html5lib curl_cffi cme-fedwatch python-dotenv yfinance
 
       - name: Run collectors
         env:
@@ -60,6 +60,8 @@ jobs:
           python collectors/coingecko_derivatives.py || echo "CG derivatives failed"
           python collectors/hyperliquid_mark.py || echo "Hyperliquid failed"
           python collectors/worldbank_reserves.py || echo "WorldBank failed"
+          # 新增：LME 与原油代理抓取
+          python collectors/lme_commodity.py || echo "LME commodity failed"
 
       - name: List data
         run: ls -la data/
