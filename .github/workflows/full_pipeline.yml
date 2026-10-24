@@ -23,25 +23,49 @@ jobs:
       - name: Install dependencies
         run: pip install pandas numpy requests python-dotenv yfinance
 
-      - name: Build Cloud DB and Run Pipeline
+            - name: Build Cloud DB and Run Pipeline
         env:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
           GMRE_PROXY_BASE: ${{ secrets.GMRE_PROXY_BASE }}
         run: |
           mkdir -p data
-          # 1. 初始化空的云端 SQLite 数据库（跳过不存在表报错）
-          python -c "import sqlite3; con=sqlite3.connect('data/macro.db'); con.execute('CREATE TABLE IF NOT EXISTS observations (series_id TEXT, timestamp TEXT, value REAL, source TEXT, retrieved_at TEXT)'); con.execute('CREATE TABLE IF NOT EXISTS feishu_snapshot (timestamp TEXT PRIMARY KEY)'); con.execute('CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)'); con.commit(); con.close()"
+          # 1. 初始化空的云端 SQLite 数据库（补齐所有需要的表）
+          python -c "
+          import sqlite3
+          con=sqlite3.connect('data/macro.db')
+          con.execute('CREATE TABLE IF NOT EXISTS observations (series_id TEXT, timestamp TEXT, value REAL, source TEXT, retrieved_at TEXT)')
+          con.execute('CREATE TABLE IF NOT EXISTS feishu_snapshot (timestamp TEXT PRIMARY KEY)')
+          con.execute('CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)')
+          con.commit(); con.close()
+          "
           
-          # 2. 跑同步和熔断（吃进刚才采集的 CSV）
-          python tools/sync_feishu_snapshot.py || echo "Sync failed"
+          # 2. 核心修复：直接读取刚才采集的本地 CSV，写入数据库
+          python -c "
+          import pandas as pd, sqlite3, os
+          csv_path = 'data/feishu_snapshot.csv'
+          if os.path.exists(csv_path):
+              df = pd.read_csv(csv_path)
+              if not df.empty:
+                  conn = sqlite3.connect('data/macro.db')
+                  cols = ['timestamp'] + [c for c in df.columns if c != 'timestamp']
+                  col_defs = ', '.join([f'{c} TEXT' for c in cols])
+                  conn.execute(f'CREATE TABLE IF NOT EXISTS feishu_snapshot (timestamp TEXT PRIMARY KEY, {col_defs})')
+                  df.to_sql('feishu_snapshot', conn, if_exists='replace', index=False)
+                  conn.close()
+                  print('✅ 本地 CSV 已成功灌入云端数据库')
+          else:
+              print('❌ 没有找到 feishu_snapshot.csv')
+          "
+          
+          # 3. 跑覆写（吃进刚才生成的 observations）
           python tools/apply_feishu_override.py || echo "Override failed"
           
-          # 3. 算分位（因为云端是全新库，数据太少会自动降级）
+          # 4. 算分位
           python tools/compute_percentile.py || echo "Percentile failed"
           
-          # 4. 运行主引擎
+          # 5. 运行主引擎
           python engines_v3/run_v4.py || echo "Engine failed"
           
-          # 5. 推送到手机飞书
+          # 6. 推送到手机飞书
           python tools/send_local_feishu.py || echo "Feishu failed"
