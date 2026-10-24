@@ -90,9 +90,15 @@ jobs:
           
           python cloud_setup.py
           
-          # 5. 跑外盘商品同步、覆写、分位、主引擎、飞书
+          # 5. 跑外盘商品同步、覆写、分位
           python tools/sync_commodity_github.py || echo "Commodity failed"
           python tools/apply_feishu_override.py || echo "Override failed"
           python tools/compute_percentile.py || echo "Percentile failed"
+          
+          # 6. 核心修复：计算 CAPS 和 LTI 并把结果落表
+          python engines_v3/caps_engine.py || echo "CAPS failed"
+          python engines_v3/lti_engine.py || echo "LTI failed"
+          
+          # 7. 运行主引擎并推飞书
           python engines_v3/run_v4.py || echo "Engine failed"
           python tools/send_local_feishu.py || echo "Feishu failed"
