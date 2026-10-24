@@ -2,7 +2,10 @@ name: Collect Data
 
 on:
   schedule:
-    - cron: '0 22 * * *'
+    - cron: '07 0 * * *'  # 北京时间 08:07
+    - cron: '07 8 * * *'  # 北京时间 16:07
+    - cron: '07 14 * * *' # 北京时间 22:07
+  workflow_dispatch:
   workflow_dispatch:
 
 permissions:
