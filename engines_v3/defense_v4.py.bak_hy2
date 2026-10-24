@@ -1,0 +1,218 @@
+"""engines_v3/defense_v4.py - 防线0-7（审计对齐版）"""
+import sys as _sys
+from pathlib import Path as _Path
+_PROJECT_ROOT = _Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_PROJECT_ROOT))
+from tools.rrp_guard import run_rrp_guard, DownstreamAction, RRPStatus
+import sqlite3
+import pandas as pd
+import json
+from datetime import datetime
+
+DB_PATH = 'data/macro.db'
+
+
+def _load(conn, sid, limit=60):
+    for col in ['timestamp', 'date']:
+        try:
+            df = pd.read_sql_query(
+                f"SELECT {col} AS dt, value FROM observations "
+                f"WHERE series_id=? ORDER BY {col} DESC LIMIT ?",
+                conn, params=(sid, limit)
+            )
+            if not df.empty:
+                df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
+                df = df.dropna(subset=['dt']).drop_duplicates(subset=['dt'], keep='first')
+                return df.sort_values('dt').set_index('dt')['value'].astype(float)
+        except Exception:
+            continue
+    return pd.Series(dtype=float)
+
+
+def evaluate_v4(asof: str) -> dict:
+    print(f"\n{'='*60}")
+    print(f"  Defense V4 (防线0-7) - {asof}")
+    print(f"{'='*60}\n")
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        # 拉数据
+        wti = _load(conn, 'WTI_OIL', 30)
+        cpi = _load(conn, 'CPIAUCSL', 30)
+        mich = _load(conn, 'MICH_1Y_EXPECT', 30)
+        yc2y = _load(conn, 'YC2Y', 30)
+        y10 = _load(conn, 'YC10Y', 30)
+        rrp = _load(conn, 'RRP_BALANCE', 30)
+        sofr = _load(conn, 'SOFR', 30)
+        effr = _load(conn, 'EFFR', 30)
+        hyg = _load(conn, 'HY_SPREAD', 30)
+        spx = _load(conn, 'SP500', 60)
+    finally:
+        conn.close()
+
+    lines = []
+
+    # ============ 防线0：INFLATION_SHOCK ============
+    d0_conds = []
+    if len(wti) >= 1:
+        d0_conds.append(('WTI>$105', float(wti.iloc[-1]) > 105, f'${float(wti.iloc[-1]):.1f}'))
+    if len(mich) >= 1:
+        d0_conds.append(('通胀预期>4.0%', float(mich.iloc[-1]) > 4.0, f'{float(mich.iloc[-1]):.2f}%'))
+    d0 = sum(1 for c in d0_conds if c[1]) >= 2
+    lines.append({
+        'line': '防线0', 'name': 'INFLATION_SHOCK',
+        'triggered': d0, 'conditions': d0_conds,
+        'action': '增配黄金+短债，避免长端'
+    })
+
+    # ============ 防线1：POLICY_SHOCK ============
+    d1_conds = []
+    if len(yc2y) >= 6:
+        y2_5d = (float(yc2y.iloc[-1]) - float(yc2y.iloc[-min(5, len(yc2y))])) * 100  # bp
+        d1_conds.append(('2Y 5D>+15bp', y2_5d > 15, f'+{y2_5d:.1f}bp'))
+    d1 = sum(1 for c in d1_conds if c[1]) >= 1
+    lines.append({
+        'line': '防线1', 'name': 'POLICY_SHOCK',
+        'triggered': d1, 'conditions': d1_conds,
+        'action': '政策重定价中，降久期'
+    })
+
+    # ============ 防线2：RATES_SHOCK ============
+    d2_conds = []
+    if len(y10) >= 1:
+        d2_conds.append(('10Y>5%', float(y10.iloc[-1]) > 5.00, f'{float(y10.iloc[-1]):.3f}%'))
+    d2 = sum(1 for c in d2_conds if c[1]) >= 1
+    lines.append({
+        'line': '防线2', 'name': 'RATES_SHOCK',
+        'triggered': d2, 'conditions': d2_conds,
+        'action': '降久期，减仓长债+成长股'
+    })
+
+    # ============ 防线3：LIQUIDITY_BUFFER_DEPLETION (由 rrp_guard 门控) ============
+    d3_conds = []
+    try:
+        _g3 = run_rrp_guard(verbose=False)
+        if _g3.downstream_action == DownstreamAction.PROCEED and _g3.primary_value is not None:
+            _rrp_used = float(_g3.primary_value)
+            _rrp_src = _g3.primary_source
+            d3_conds.append((f'RRP<50B ({_rrp_src})', _rrp_used < 50, f'{_rrp_used:.2f}B'))
+            d3 = sum(1 for c in d3_conds if c[1]) >= 1
+        elif _g3.downstream_action == DownstreamAction.OBSERVE:
+            d3_conds.append(('RRP_OBSERVE', False, _g3.status.value))
+            d3 = False
+        else:  # BLOCK
+            d3_conds.append(('RRP_DATA_UNAVAILABLE', False, _g3.status.value))
+            d3 = False
+    except Exception as _e:
+        d3_conds.append(('RRP_GUARD_ERROR', False, str(_e)))
+        d3 = False
+    lines.append({
+        'line': '防线3', 'name': 'LIQUIDITY_BUFFER',
+        'triggered': d3, 'conditions': d3_conds,
+        'action': '流动性缓冲耗尽，保留现金'
+    })
+
+    # ============ 防线4：FUNDING_STRESS ============
+    d4_conds = []
+    if len(sofr) >= 1 and len(effr) >= 1:
+        spread = (float(sofr.ffill().iloc[-1]) - float(effr.ffill().iloc[-1])) * 100
+        d4_conds.append(('SOFR-EFFR>+3bp', spread > 3, f'{spread:.2f}bp'))
+    d4 = sum(1 for c in d4_conds if c[1]) >= 1
+    lines.append({
+        'line': '防线4', 'name': 'FUNDING_STRESS',
+        'triggered': d4, 'conditions': d4_conds,
+        'action': '融资压力确认，全面防御'
+    })
+
+    # ============ 防线5：CREDIT_STRESS ============
+    d5_conds = []
+    if len(hyg) >= 20:
+        hyg_now = float(hyg.iloc[-1])
+        hyg_20d_chg = (hyg_now - float(hyg.iloc[-min(20, len(hyg))])) / float(hyg.iloc[-min(20, len(hyg))]) if float(hyg.iloc[-min(20, len(hyg))]) else 0
+        d5_conds.append(('HY 20D走阔>10%', hyg_20d_chg > 0.10, f'{hyg_20d_chg*100:.2f}%'))
+    d5 = sum(1 for c in d5_conds if c[1]) >= 1
+    lines.append({
+        'line': '防线5', 'name': 'CREDIT_STRESS',
+        'triggered': d5, 'conditions': d5_conds,
+        'action': '信用压力确认，清仓高Beta'
+    })
+
+    # ============ 防线6：CONTAGION ============
+    d6_conds = []
+    if len(spx) >= 30 and len(y10) >= 30:
+        spx_ret = spx.pct_change().dropna()
+        y10_chg = y10.diff().dropna()
+        df = pd.concat([spx_ret.rename('s'), y10_chg.rename('y')], axis=1, sort=True).dropna()
+        if len(df) >= 5:
+            corr5 = float(df.tail(5).corr().iloc[0, 1])
+            d6_conds.append(('股债5D>0.5', corr5 > 0.5, f'{corr5:.2f}'))
+    d6 = sum(1 for c in d6_conds if c[1]) >= 1
+    lines.append({
+        'line': '防线6', 'name': 'CONTAGION',
+        'triggered': d6, 'conditions': d6_conds,
+        'action': '传染确认，全面去杠杆'
+    })
+
+    # ============ 防线7：SYSTEMIC ============
+    d4_layer = next((l for l in lines if l['line'] == '防线4'), None)
+    d5_layer = next((l for l in lines if l['line'] == '防线5'), None)
+    d6_layer = next((l for l in lines if l['line'] == '防线6'), None)
+
+    d7 = (
+        (d4_layer and d4_layer['triggered']) and
+        (d5_layer and d5_layer['triggered']) and
+        (d6_layer and d6_layer['triggered'])
+    )
+    lines.append({
+        'line': '防线7', 'name': 'SYSTEMIC',
+        'triggered': d7,
+        'conditions': [
+            ('防线4 FUNDING', d4_layer['triggered'] if d4_layer else False, ''),
+            ('防线5 CREDIT', d5_layer['triggered'] if d5_layer else False, ''),
+            ('防线6 CONTAGION', d6_layer['triggered'] if d6_layer else False, ''),
+        ],
+        'action': '系统性危机，全面熔断'
+    })
+
+    triggered_count = sum(1 for l in lines if l['triggered'] and l['line'] != '防线7')
+
+    result = {
+        'asof': asof,
+        'triggered_count': triggered_count,
+        'systemic_confirmed': d7,
+        'lines': lines
+    }
+
+    # 落盘
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS defense_v4 (
+            asof_date TEXT PRIMARY KEY,
+            triggered_count INTEGER, systemic_confirmed INTEGER, detail TEXT
+        )
+    """)
+    conn.execute("""
+        INSERT OR REPLACE INTO defense_v4
+        (asof_date, triggered_count, systemic_confirmed, detail)
+        VALUES (?, ?, ?, ?)
+    """, (asof, triggered_count, int(d7), json.dumps(lines)))
+    conn.commit()
+    conn.close()
+
+    print(f"  已突破防线: {triggered_count}/7")
+    print(f"  系统性危机: {'🚨 是' if d7 else '🟢 否'}\n")
+    for l in lines:
+        icon = '🚨' if l['triggered'] else '⏸️'
+        print(f"  {icon} [{l['line']}] {l['name']}")
+        for c in l['conditions']:
+            mark = '✓' if c[1] else '✗'
+            print(f"        [{mark}] {c[0]}: {c[2]}")
+    print(f"{'='*60}\n")
+
+    return result
+
+
+if __name__ == "__main__":
+    asof = datetime.now().strftime('%Y-%m-%d')
+    evaluate_v4(asof)
