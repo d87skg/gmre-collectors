@@ -44,15 +44,12 @@ jobs:
           con.commit()
           con.close()
 
-          # 2. 把刚才云端采到的 CSV 灌入本地库
+          # 2. 把刚才云端采到的 CSV 灌入本地库（直接用 pandas 覆盖，避开主键冲突）
           csv_path = 'data/feishu_snapshot.csv'
           if os.path.exists(csv_path):
               df = pd.read_csv(csv_path)
               if not df.empty:
                   conn = sqlite3.connect('data/macro.db')
-                  cols = ['timestamp'] + [c for c in df.columns if c != 'timestamp']
-                  col_defs = ', '.join([f'{c} TEXT' for c in cols])
-                  conn.execute(f'CREATE TABLE IF NOT EXISTS feishu_snapshot (timestamp TEXT PRIMARY KEY, {col_defs})')
                   df.to_sql('feishu_snapshot', conn, if_exists='replace', index=False)
                   conn.close()
                   print('✅ CSV 已成功灌入云端数据库')
