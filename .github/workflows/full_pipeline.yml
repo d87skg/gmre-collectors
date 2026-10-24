@@ -2,7 +2,8 @@ name: Full Cloud Engine (Backup)
 
 on:
   schedule:
-    - cron: '0 4 * * *'
+    # 方案一：在 UTC 0/8/16 点（结算后）的 15 分执行，避开并发高峰
+    - cron: '15 0,8,16 * * *'
   workflow_dispatch:
 
 permissions:
@@ -21,7 +22,6 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        # 补上 scikit-learn 等所有依赖
         run: pip install pandas numpy requests python-dotenv yfinance scikit-learn scipy statsmodels
 
       - name: Build Cloud DB and Run Pipeline
@@ -36,8 +36,11 @@ jobs:
           import sqlite3
           import pandas as pd
           import os
+          import requests
+          import io
+          from datetime import datetime
 
-          # 1. 提前把需要的空表全部建好
+          # 1. 建基础表
           con = sqlite3.connect('data/macro.db')
           con.execute('CREATE TABLE IF NOT EXISTS observations (series_id TEXT, timestamp TEXT, value REAL, source TEXT, retrieved_at TEXT)')
           con.execute('CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)')
@@ -46,42 +49,51 @@ jobs:
           con.commit()
           con.close()
 
-          # ============ 核心修复：加载历史锚点 ============
+          # 2. 加载本地推上来的 120 天历史锚点
           anchor_path = 'data/history_anchor.csv'
           if os.path.exists(anchor_path):
               df_anchor = pd.read_csv(anchor_path)
               conn = sqlite3.connect('data/macro.db')
-              # 将历史数据追加到 observations 表
               df_anchor.to_sql('observations', conn, if_exists='append', index=False)
               conn.close()
               print(f'✅ 历史锚点已加载 ({len(df_anchor)} 条)')
-          else:
-              print('❌ 未找到 history_anchor.csv，引擎可能因为数据不足而偏保守')
-          # ===============================================
 
-          # 2. 把刚才云端采到的最新 CSV 灌入本地库
-          csv_path = 'data/feishu_snapshot.csv'
-          if os.path.exists(csv_path):
-              df = pd.read_csv(csv_path)
-              if not df.empty:
-                  conn = sqlite3.connect('data/macro.db')
-                  df.to_sql('feishu_snapshot', conn, if_exists='replace', index=False)
-                  conn.close()
-                  print('✅ CSV 已成功灌入云端数据库')
+          # 3. 方案二：直接白嫖高频账号的新数据
+          urls = [
+              "https://raw.githubusercontent.com/jmhbldj/gmre-collectors/data-highfreq/data/feishu_snapshot.csv", # 优先新号高频
+              "https://raw.githubusercontent.com/d87skg/gmre-collectors/main/data/feishu_snapshot.csv"            # 降级旧号主分支
+          ]
+          
+          all_rows = []
+          for url in urls:
+              try:
+                  r = requests.get(f"{url}?t={datetime.now().timestamp()}", timeout=10)
+                  if r.status_code == 200 and r.text.strip():
+                      df_tmp = pd.read_csv(io.StringIO(r.text))
+                      all_rows.append(df_tmp)
+                      print(f'✅ 成功拉取线上数据: {url.split("/")[-3]}')
+                      break # 成功拉到一条就跳出，防止重复
+              except Exception as e:
+                  print(f'⚠️ 拉取失败 ({url}): {str(e)[:30]}')
+                  
+          if all_rows:
+              df_combined = pd.concat(all_rows, ignore_index=True)
+              df_combined.drop_duplicates(subset=['timestamp'], keep='last', inplace=True)
+              conn = sqlite3.connect('data/macro.db')
+              df_combined.to_sql('feishu_snapshot', conn, if_exists='replace', index=False)
+              conn.close()
+              print(f'✅ 已从线上合并灌入 {len(df_combined)} 条快照')
           else:
-              print('❌ 没有找到 feishu_snapshot.csv')
+              print('❌ 所有节点均无法获取，将使用历史锚点纯靠缓存计算')
           EOF
           
           python cloud_setup.py
           
-          # 3. 跑覆写
+          # 4. CAPS 补充：从 GitHub 同步外盘商品价格
+          python tools/sync_commodity_github.py || echo "Commodity failed"
+          
+          # 5. 跑覆写、算分位、主引擎、推飞书
           python tools/apply_feishu_override.py || echo "Override failed"
-          
-          # 4. 算分位
           python tools/compute_percentile.py || echo "Percentile failed"
-          
-          # 5. 运行主引擎
           python engines_v3/run_v4.py || echo "Engine failed"
-          
-          # 6. 推送到手机飞书
           python tools/send_local_feishu.py || echo "Feishu failed"
