@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - 全息推演版（含核心资产矩阵 + N/A兜底）"""
+"""tools/send_local_feishu.py - 全息推演版（含核心资产矩阵 + 汇率修复 + N/A兜底）"""
 import os
 import requests
 import json
@@ -33,7 +33,7 @@ def get_latest_data():
         'bitget_fr': 0.0, 'coinbase_prem': 0.0, 'hl_imb': 0.0,
         'btc_etf_flow': 0.0, 'fear_greed': 0,
         'lti_raw_fr': 0.0, 'lti_raw_imb': 0.0,
-        # 新增：大类资产与汇率
+        # 大类资产与汇率
         'gold': 0.0, 'silver': 0.0, 'oil': 0.0, 'copper': 0.0,
         'dxy': 0.0, 'usdjpy': 0.0, 'usdcny': 0.0, 'spx': 0.0
     }
@@ -64,7 +64,7 @@ def get_latest_data():
             data['lti_score'] = round(row[0], 1)
             data['lti_level'] = row[1]
 
-        # 3. 核心宏观数据 (从 observations 兜底)
+        # 3. 核心宏观数据
         def get_val(sid):
             r = conn.execute("SELECT value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 1", (sid,)).fetchone()
             return r[0] if r else 0.0
@@ -74,13 +74,12 @@ def get_latest_data():
         data['hy_oas'] = get_val('HY_SPREAD')
         data['vix'] = get_val('VIX')
         
-        # 4. 最新飞书快照（包含大类资产、汇率与微观异动）
+        # 4. 最新飞书快照（大类资产、汇率与微观异动）
         row = conn.execute("SELECT * FROM feishu_snapshot ORDER BY timestamp DESC LIMIT 1").fetchone()
         if row:
             cols = [d[0] for d in conn.execute("SELECT * FROM feishu_snapshot LIMIT 1").description]
             f_data = dict(zip(cols, row))
             
-            # 微观异动
             data['bitget_fr'] = float(f_data.get('bitget_btc_fr', 0) or 0)
             data['coinbase_prem'] = float(f_data.get('coinbase_premium', 0) or 0)
             data['hl_imb'] = float(f_data.get('hl_imbalance_btc', 0) or 0)
@@ -89,17 +88,20 @@ def get_latest_data():
             data['lti_raw_fr'] = data['bitget_fr']
             data['lti_raw_imb'] = data['hl_imb']
             
-            # 新增：从快照读取大类资产和汇率
             data['gold'] = float(f_data.get('gold', 0) or 0)
             data['silver'] = float(f_data.get('silver', 0) or 0)
             data['oil'] = float(f_data.get('oil', 0) or 0)
             data['copper'] = float(f_data.get('copper', 0) or 0)
             data['dxy'] = float(f_data.get('dxy', 0) or 0)
             data['usdjpy'] = float(f_data.get('usdjpy', 0) or 0)
-            data['usdcny'] = float(f_data.get('usdcny_mid', 0) or 0)  # 注意：快照字段可能是 usdcny_mid 或者没抓到
-            if data['usdcny'] == 0:
-                data['usdcny'] = get_val('USDCNY_MID') # 如果快照没抓到，去宏观库里找
-            data['spx'] = float(f_data.get('ndx', 0) or 0) # 快照里的 NDX 纳指通常代表美股
+            data['spx'] = float(f_data.get('ndx', 0) or 0)
+            
+            # 核心修复：读取人民币并智能判断格式
+            raw_cny = float(f_data.get('usdcny_mid', 0) or 0)
+            if raw_cny == 0:
+                raw_cny = get_val('USDCNY_MID')
+            # 如果数值大于 10（比如 669.33），说明它被乘以了 100，需要除回来
+            data['usdcny'] = raw_cny / 100.0 if raw_cny > 10 else raw_cny
 
     except Exception as e:
         print(f"⚠️ 读取数据库失败: {e}")
@@ -137,7 +139,6 @@ def main():
     icon_cu = "🟡" if d['caps_cu'] == 'N/A' else ("🚨" if isinstance(d['caps_cu'], float) and d['caps_cu'] >= 60 else "🟡")
     icon_al = "🚨" if d['caps_al'] == 'N/A' else ("🚨" if isinstance(d['caps_al'], float) and d['caps_al'] >= 60 else "🟡")
 
-    # 获取北京时间
     bj_time = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
 
     text = f"""📊 **GMRE 3.3 全息风控晨报** - {d['asof']}
@@ -151,7 +152,7 @@ def main():
   • 原油 (WTI): ${d['oil']:.2f} | 铜: ${d['copper']:.2f}
   • 美股 (纳指): {d['spx']:.1f}
   • 美元指数: {d['dxy']:.2f} | 美元/日元: {d['usdjpy']:.2f}
-  • 美元/人民币: {d['usdcny']:.2f}
+  • 美元/人民币: {d['usdcny']:.4f}
 
 🌐 **核心宏观数据**:
   • 10Y 美债: {d['y10']:.2f}%

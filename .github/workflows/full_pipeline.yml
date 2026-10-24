@@ -2,7 +2,7 @@ name: Full Cloud Engine (Backup)
 
 on:
   schedule:
-    # 方案一：在 UTC 0/8/16 点（结算后）的 15 分执行，避开并发高峰
+    # 每天 UTC 0/8/16 点（结算后 15 分）执行，避开并发高峰
     - cron: '15 0,8,16 * * *'
   workflow_dispatch:
 
@@ -40,62 +40,58 @@ jobs:
           import io
           from datetime import datetime
 
-          # 1. 建基础表（全量补齐版）
+          # 1. 建表（包含全量需要的表）
           con = sqlite3.connect('data/macro.db')
           con.execute('CREATE TABLE IF NOT EXISTS observations (series_id TEXT, timestamp TEXT, value REAL, source TEXT, retrieved_at TEXT)')
           con.execute('CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)')
           con.execute('CREATE TABLE IF NOT EXISTS caps_engine (asof_date TEXT, symbol TEXT, caps_score REAL, PRIMARY KEY(asof_date, symbol))')
           con.execute('CREATE TABLE IF NOT EXISTS lti_engine (asof_date TEXT PRIMARY KEY, lti_score REAL, level TEXT)')
-          # 补齐缺失的商品表和链上表
           con.execute('CREATE TABLE IF NOT EXISTS commodity_caps (date TEXT, symbol TEXT, open_interest REAL, warehouse_stock REAL, close_price REAL, PRIMARY KEY (date, symbol))')
           con.execute('CREATE TABLE IF NOT EXISTS san_metrics (datetime TEXT, metric TEXT, slug TEXT, value REAL)')
           con.commit()
           con.close()
 
-          # 2. 加载本地推上来的 120 天历史锚点
-          anchor_path = 'data/history_anchor.csv'
-          if os.path.exists(anchor_path):
-              df_anchor = pd.read_csv(anchor_path)
+          # 2. 加载宏观历史锚点
+          if os.path.exists('data/history_anchor.csv'):
+              df = pd.read_csv('data/history_anchor.csv')
               conn = sqlite3.connect('data/macro.db')
-              df_anchor.to_sql('observations', conn, if_exists='append', index=False)
+              df.to_sql('observations', conn, if_exists='append', index=False)
               conn.close()
-              print(f'✅ 历史锚点已加载 ({len(df_anchor)} 条)')
+              print(f'✅ 宏观锚点已加载 ({len(df)} 条)')
+              
+          # 3. 加载商品历史锚点（彻底解决 CAPS 为 N/A 的问题）
+          if os.path.exists('data/commodity_anchor.csv'):
+              df_comm = pd.read_csv('data/commodity_anchor.csv')
+              conn = sqlite3.connect('data/macro.db')
+              df_comm.to_sql('commodity_caps', conn, if_exists='append', index=False)
+              conn.close()
+              print(f'✅ 商品锚点已加载 ({len(df_comm)} 条)')
+          else:
+              print('❌ 未找到 commodity_anchor.csv，CAPS 将降级为空')
 
-          # 3. 方案二：直接白嫖高频账号的新数据
+          # 4. 白嫖高频账号的最新快照
           urls = [
-              "https://raw.githubusercontent.com/jmhbldj/gmre-collectors/data-highfreq/data/feishu_snapshot.csv", # 优先新号高频
-              "https://raw.githubusercontent.com/d87skg/gmre-collectors/main/data/feishu_snapshot.csv"            # 降级旧号主分支
+              "https://raw.githubusercontent.com/jmhbldj/gmre-collectors/data-highfreq/data/feishu_snapshot.csv",
+              "https://raw.githubusercontent.com/d87skg/gmre-collectors/main/data/feishu_snapshot.csv"
           ]
-          
-          all_rows = []
           for url in urls:
               try:
                   r = requests.get(f"{url}?t={datetime.now().timestamp()}", timeout=10)
                   if r.status_code == 200 and r.text.strip():
                       df_tmp = pd.read_csv(io.StringIO(r.text))
-                      all_rows.append(df_tmp)
+                      conn = sqlite3.connect('data/macro.db')
+                      df_tmp.to_sql('feishu_snapshot', conn, if_exists='replace', index=False)
+                      conn.close()
                       print(f'✅ 成功拉取线上数据: {url.split("/")[-3]}')
-                      break # 成功拉到一条就跳出，防止重复
+                      break
               except Exception as e:
                   print(f'⚠️ 拉取失败 ({url}): {str(e)[:30]}')
-                  
-          if all_rows:
-              df_combined = pd.concat(all_rows, ignore_index=True)
-              df_combined.drop_duplicates(subset=['timestamp'], keep='last', inplace=True)
-              conn = sqlite3.connect('data/macro.db')
-              df_combined.to_sql('feishu_snapshot', conn, if_exists='replace', index=False)
-              conn.close()
-              print(f'✅ 已从线上合并灌入 {len(df_combined)} 条快照')
-          else:
-              print('❌ 所有节点均无法获取，将使用历史锚点纯靠缓存计算')
           EOF
           
           python cloud_setup.py
           
-          # 4. CAPS 补充：从 GitHub 同步外盘商品价格
+          # 5. 跑外盘商品同步、覆写、分位、主引擎、飞书
           python tools/sync_commodity_github.py || echo "Commodity failed"
-          
-          # 5. 跑覆写、算分位、主引擎、推飞书
           python tools/apply_feishu_override.py || echo "Override failed"
           python tools/compute_percentile.py || echo "Percentile failed"
           python engines_v3/run_v4.py || echo "Engine failed"
