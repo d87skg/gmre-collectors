@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""collectors/save_feishu_snapshot.py - 从飞书文本解析所有字段并写入 CSV"""
-import csv
+"""collectors/save_feishu_snapshot.py - 飞书文本解析与 CSV 安全写入"""
 import os
 import re
+import pandas as pd
 from datetime import datetime
 
 def _num(s):
@@ -166,17 +166,24 @@ def parse_and_save_snapshot(text):
     m = re.search(r'ETH ETF 净流.*?US\$([+-]?[\d.]+)m', text, re.DOTALL)
     d['eth_etf_flow_usd_m'] = _num(m.group(1)) if m else ''
 
-    # ========== 写入 CSV ==========
+    # ========== Pandas 安全写入 CSV ==========
     csv_path = 'data/feishu_snapshot.csv'
     os.makedirs('data', exist_ok=True)
-    file_exists = os.path.isfile(csv_path)
-
-    fieldnames = list(d.keys())
-    with open(csv_path, 'a', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(d)
+    
+    # 将新数据转为 DataFrame
+    df_new = pd.DataFrame([d])
+    
+    if os.path.exists(csv_path):
+        try:
+            df_old = pd.read_csv(csv_path)
+            # 合并新旧数据，根据 timestamp 去重保留最新
+            df_combined = pd.concat([df_old, df_new], ignore_index=True)
+            df_combined.drop_duplicates(subset=['timestamp'], keep='last', inplace=True)
+            df_combined.to_csv(csv_path, index=False, encoding='utf-8')
+        except Exception:
+            df_new.to_csv(csv_path, index=False, encoding='utf-8')
+    else:
+        df_new.to_csv(csv_path, index=False, encoding='utf-8')
 
     non_empty = sum(1 for v in d.values() if v != '')
     print(f"✅ feishu_snapshot.csv 已更新: {csv_path}")
