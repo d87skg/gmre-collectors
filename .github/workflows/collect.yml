@@ -2,10 +2,9 @@ name: Collect Data
 
 on:
   schedule:
-    - cron: '07 0 * * *'  # 北京时间 08:07
-    - cron: '07 8 * * *'  # 北京时间 16:07
-    - cron: '07 14 * * *' # 北京时间 22:07
-  workflow_dispatch:
+    - cron: '17 0 * * *'  # 早上 8 点 17 分 (北京)
+    - cron: '17 8 * * *'  # 下午 16 点 17 分 (北京)
+    - cron: '17 14 * * *' # 晚上 22 点 17 分 (北京)
   workflow_dispatch:
 
 permissions:
@@ -63,13 +62,11 @@ jobs:
           python collectors/coingecko_derivatives.py || echo "CG derivatives failed"
           python collectors/hyperliquid_mark.py || echo "Hyperliquid failed"
           python collectors/worldbank_reserves.py || echo "WorldBank failed"
-          # 新增：LME 与原油代理抓取
           python collectors/lme_commodity.py || echo "LME commodity failed"
 
       - name: List data
         run: ls -la data/
 
-      # === 原有步骤：提交所有采集数据 ===
       - name: Commit data
         run: |
           git config user.name "github-actions[bot]"
@@ -82,7 +79,6 @@ jobs:
             git push || echo "Push failed"
           fi
 
-      # === 推送飞书（同时生成 feishu_snapshot.csv）===
       - name: Notify Feishu
         if: always()
         env:
@@ -91,7 +87,6 @@ jobs:
         run: |
           python collectors/notify_feishu.py
 
-      # === 新增：提交 feishu_snapshot.csv ===
       - name: Commit feishu snapshot
         if: always()
         run: |

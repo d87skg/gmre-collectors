@@ -5,26 +5,16 @@ import os
 import re
 from datetime import datetime
 
-
 def _num(s):
-    """安全转 float，去掉千位分隔符"""
-    if s is None:
-        return ''
-    try:
-        return float(str(s).replace(',', ''))
-    except Exception:
-        return ''
-
+    if s is None: return ''
+    try: return float(str(s).replace(',', ''))
+    except Exception: return ''
 
 def _int(s):
-    try:
-        return int(str(s).replace(',', ''))
-    except Exception:
-        return ''
-
+    try: return int(str(s).replace(',', ''))
+    except Exception: return ''
 
 def parse_and_save_snapshot(text):
-    """从飞书文本解析所有字段，追加到 data/feishu_snapshot.csv"""
     d = {'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     # ========== 市场指标 ==========
@@ -37,6 +27,14 @@ def parse_and_save_snapshot(text):
     d['usdjpy'] = _num(m.group(1)) if m else ''
     m = re.search(r'VIX:\s*([\d.]+)', text)
     d['vix'] = _num(m.group(1)) if m else ''
+
+    # ========== 国债收益率 ==========
+    m = re.search(r'2Y:\s*([\d.]+)%', text)
+    d['us_2y'] = _num(m.group(1)) if m else ''
+    m = re.search(r'10Y:\s*([\d.]+)%', text)
+    d['us_10y'] = _num(m.group(1)) if m else ''
+    m = re.search(r'30Y:\s*([\d.]+)%', text)
+    d['us_30y'] = _num(m.group(1)) if m else ''
 
     # ========== 宏观相对定价 ==========
     m = re.search(r'金铜比[^:]*:\s*([\d.]+)', text)
@@ -52,14 +50,6 @@ def parse_and_save_snapshot(text):
     m = re.search(r'麦铜比[^:]*:\s*([\d.]+)', text)
     d['wheat_copper_ratio'] = _num(m.group(1)) if m else ''
 
-    # ========== 国债收益率 ==========
-    m = re.search(r'2Y:\s*([\d.]+)%', text)
-    d['us_2y'] = _num(m.group(1)) if m else ''
-    m = re.search(r'10Y:\s*([\d.]+)%', text)
-    d['us_10y'] = _num(m.group(1)) if m else ''
-    m = re.search(r'30Y:\s*([\d.]+)%', text)
-    d['us_30y'] = _num(m.group(1)) if m else ''
-
     # ========== 信用 ==========
     m = re.search(r'HY OAS:\s*(\d+)bp', text)
     d['hy_oas_bp'] = _int(m.group(1)) if m else ''
@@ -67,7 +57,7 @@ def parse_and_save_snapshot(text):
     d['hy_oas_20d_chg'] = _num(m.group(1)) if m else ''
     m = re.search(r'\n\s+BB:\s*(\d+)bp', text)
     d['hy_bb_bp'] = _int(m.group(1)) if m else ''
-    m = re.search(r'\n\s+B:\s*(\d+)bp', text)  # 注意：\s+ 排除 BB 的 B
+    m = re.search(r'\n\s+B:\s*(\d+)bp', text) 
     d['hy_b_bp'] = _int(m.group(1)) if m else ''
     m = re.search(r'CCC:\s*(\d+)bp', text)
     d['hy_ccc_bp'] = _int(m.group(1)) if m else ''
