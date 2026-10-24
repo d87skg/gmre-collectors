@@ -2,7 +2,7 @@ name: Full Cloud Engine (Backup)
 
 on:
   schedule:
-    - cron: '0 4 * * *'  # 每天 UTC 04:00 (北京 12:00)，错开本地 9:00 的计算
+    - cron: '0 4 * * *'  # 每天 UTC 04:00 (北京 12:00)
   workflow_dispatch:
 
 permissions:
@@ -23,26 +23,28 @@ jobs:
       - name: Install dependencies
         run: pip install pandas numpy requests python-dotenv yfinance
 
-            - name: Build Cloud DB and Run Pipeline
+      - name: Build Cloud DB and Run Pipeline
         env:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
           GMRE_PROXY_BASE: ${{ secrets.GMRE_PROXY_BASE }}
         run: |
           mkdir -p data
-          # 1. 初始化空的云端 SQLite 数据库（补齐所有需要的表）
-          python -c "
-          import sqlite3
-          con=sqlite3.connect('data/macro.db')
-          con.execute('CREATE TABLE IF NOT EXISTS observations (series_id TEXT, timestamp TEXT, value REAL, source TEXT, retrieved_at TEXT)')
-          con.execute('CREATE TABLE IF NOT EXISTS feishu_snapshot (timestamp TEXT PRIMARY KEY)')
-          con.execute('CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)')
-          con.commit(); con.close()
-          "
           
-          # 2. 核心修复：直接读取刚才采集的本地 CSV，写入数据库
-          python -c "
-          import pandas as pd, sqlite3, os
+          # 用单独的脚本生成空表和灌入数据，避免 YAML 语法解析错误
+          cat << 'EOF' > cloud_setup.py
+          import sqlite3
+          import pandas as pd
+          import os
+
+          # 1. 建基础表
+          con = sqlite3.connect('data/macro.db')
+          con.execute('CREATE TABLE IF NOT EXISTS observations (series_id TEXT, timestamp TEXT, value REAL, source TEXT, retrieved_at TEXT)')
+          con.execute('CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)')
+          con.commit()
+          con.close()
+
+          # 2. 把刚才云端采到的 CSV 灌入本地库
           csv_path = 'data/feishu_snapshot.csv'
           if os.path.exists(csv_path):
               df = pd.read_csv(csv_path)
@@ -53,10 +55,12 @@ jobs:
                   conn.execute(f'CREATE TABLE IF NOT EXISTS feishu_snapshot (timestamp TEXT PRIMARY KEY, {col_defs})')
                   df.to_sql('feishu_snapshot', conn, if_exists='replace', index=False)
                   conn.close()
-                  print('✅ 本地 CSV 已成功灌入云端数据库')
+                  print('✅ CSV 已成功灌入云端数据库')
           else:
               print('❌ 没有找到 feishu_snapshot.csv')
-          "
+          EOF
+          
+          python cloud_setup.py
           
           # 3. 跑覆写（吃进刚才生成的 observations）
           python tools/apply_feishu_override.py || echo "Override failed"
