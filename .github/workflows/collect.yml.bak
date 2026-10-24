@@ -1,0 +1,101 @@
+name: Collect Data
+
+on:
+  schedule:
+    - cron: '17 0 * * *'  # 早上 8 点 17 分 (北京)
+    - cron: '17 8 * * *'  # 下午 16 点 17 分 (北京)
+    - cron: '17 14 * * *' # 晚上 22 点 17 分 (北京)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pandas requests lxml html5lib curl_cffi cme-fedwatch python-dotenv yfinance
+
+      - name: Run collectors
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          BGEOMETRICS_TOKEN: ${{ secrets.BGEOMETRICS_TOKEN }}
+        run: |
+          mkdir -p data/
+          python collectors/fred_macro.py || echo "FRED failed"
+          python collectors/yahoo_market.py || echo "Yahoo failed"
+          python collectors/bgeometrics_onchain.py || echo "BGeometrics failed"
+          python collectors/deribit_skew.py || echo "Deribit skew failed"
+          python collectors/hyperliquid_depth.py || echo "HL depth failed"
+          python collectors/binance_sentiment.py || echo "Binance sentiment failed"
+          python collectors/us_institution.py || echo "US inst failed"
+          python collectors/cftc_socrata.py || echo "CFTC failed"
+          python collectors/bis_cbpol.py || echo "BIS failed"
+          python collectors/ecb_rates.py || echo "ECB failed"
+          python collectors/eurostat_hicp.py || echo "Eurostat failed"
+          python collectors/boj_rates.py || echo "BOJ failed"
+          python collectors/farside_etf.py || echo "Farside BTC failed"
+          python collectors/farside_eth_etf.py || echo "Farside ETH failed"
+          python collectors/deribit_dvol.py || echo "Deribit DVOL failed"
+          python collectors/deribit_perp.py || echo "Deribit perp failed"
+          python collectors/blockchain_com.py || echo "Blockchain failed"
+          python collectors/fear_greed.py || echo "FearGreed failed"
+          python collectors/fetch_fedwatch.py || echo "CME failed"
+          python collectors/okx_funding.py || echo "OKX funding failed"
+          python collectors/okx_oi.py || echo "OKX OI failed"
+          python collectors/okx_liquidation.py || echo "OKX liq failed"
+          python collectors/nyfed_rates.py || echo "NY Fed failed"
+          python collectors/treasury_tga.py || echo "TGA failed"
+          python collectors/defillama_stablecoin.py || echo "DefiLlama failed"
+          python collectors/coingecko_global.py || echo "CG global failed"
+          python collectors/coingecko_stablecoins.py || echo "CG stables failed"
+          python collectors/coingecko_exchange_vol.py || echo "CG exvol failed"
+          python collectors/coingecko_derivatives.py || echo "CG derivatives failed"
+          python collectors/hyperliquid_mark.py || echo "Hyperliquid failed"
+          python collectors/worldbank_reserves.py || echo "WorldBank failed"
+          python collectors/lme_commodity.py || echo "LME commodity failed"
+
+      - name: List data
+        run: ls -la data/
+
+      - name: Commit data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ || true
+          if git diff --staged --quiet; then
+            echo "No changes, skipping commit"
+          else
+            git commit -m "data: $(date -u +%Y-%m-%d)"
+            git push || echo "Push failed"
+          fi
+
+      - name: Notify Feishu
+        if: always()
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+        run: |
+          python collectors/notify_feishu.py
+
+      - name: Commit feishu snapshot
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/feishu_snapshot.csv || true
+          if git diff --staged --quiet; then
+            echo "No snapshot changes, skipping commit"
+          else
+            git commit -m "feishu snapshot: $(date -u +%Y-%m-%d)"
+            git push || echo "Push failed"
+          fi

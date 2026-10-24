@@ -1,29 +1,5 @@
 """
-FRED 宏观指标（扩展版）
-原 11 系列 + 新增 10 系列：
-- DFII10       10Y TIPS（真实利率）
-- T5YIE        5Y Breakeven 通胀预期
-- T10YIE       10Y Breakeven 通胀预期
-- BAMLH0A1HYBB BB 级 HY OAS
-- BAMLH0A2HYB  B 级 HY OAS
-- BAMLH0A3HYC  CCC 级 HY OAS
-- BAMLC0A1CAAA AAA 级 IG OAS
-- BAMLC0A4CBBB BBB 级 IG OAS
-- T10Y3M       10Y-3M 利差（衰退领先）
-- DRTSCILM     SLOOS 信贷标准
-
-原 11 系列：
-- WRESBAL      准备金余额
-- CPF3M        3个月商业票据利率
-- TB3MS        3个月国债利率
-- THREEFYTP10  10年期 ACM 期限溢价
-- BAMLH0A0HYM2 HY OAS 整体
-- BAMLC0A0CM   IG OAS 整体
-- RIFSPPNA2P2D60NB 60天 AA 非金融 CP 利率（CD 代理）
-- DGS2/DGS10/DGS30 2Y/10Y/30Y 国债收益率
-- DRCRELEXFACBS 商业地产贷款拖欠率（CMBS 代理）
-
-环境变量: FRED_API_KEY
+FRED 宏观指标（扩展版） - 强制重试与降级版
 """
 import os
 import time
@@ -43,55 +19,23 @@ API_KEY = os.environ.get('FRED_API_KEY')
 
 SERIES = [
     # 原 11 系列
-    'WRESBAL',
-    'CPF3M',
-    'TB3MS',
-    'THREEFYTP10',
-    'BAMLH0A0HYM2',
-    'BAMLC0A0CM',
-    'RIFSPPNA2P2D60NB',
-    'DGS2',
-    'DGS10',
-    'DGS30',
-    'DRCRELEXFACBS',
+    'WRESBAL', 'CPF3M', 'TB3MS', 'THREEFYTP10', 'BAMLH0A0HYM2',
+    'BAMLC0A0CM', 'RIFSPPNA2P2D60NB', 'DGS2', 'DGS10', 'DGS30', 'DRCRELEXFACBS',
     # 新增 10 系列
-    'DFII10',
-    'T5YIE',
-    'T10YIE',
-    'BAMLH0A1HYBB',
-    'BAMLH0A2HYB',
-    'BAMLH0A3HYC',
-    'BAMLC0A1CAAA',
-    'BAMLC0A4CBBB',
-    'T10Y3M',
-    'DRTSCILM',
+    'DFII10', 'T5YIE', 'T10YIE', 'BAMLH0A1HYBB', 'BAMLH0A2HYB',
+    'BAMLH0A3HYC', 'BAMLC0A1CAAA', 'BAMLC0A4CBBB', 'T10Y3M', 'DRTSCILM',
     # 通胀 + 就业（基础）
-    'CPIAUCSL',
-    'CPILFESL',
-    'PCEPI',
-    'PCEPILFE',
-    'PAYEMS',
-    'UNRATE',
-    'ICSA',
+    'CPIAUCSL', 'CPILFESL', 'PCEPI', 'PCEPILFE', 'PAYEMS', 'UNRATE', 'ICSA',
     # 通胀分项（看粘性从哪来）
-    'CPIENGSL',
-    'CPIFABSL',
-    'CUSR0000SAH1',
-    'CUSR0000SASLE',
+    'CPIENGSL', 'CPIFABSL', 'CUSR0000SAH1', 'CUSR0000SASLE',
     # 工资与预期（验证核心通胀）
-    'CES0500000003',
-    'ECIALLCIV',
-    'MICH',
+    'CES0500000003', 'ECIALLCIV', 'MICH',
     # 景气度（交叉验证非农）
-    'NAPM',
-    'NAPMNOI',
-    'MANEMP',    # 制造业就业
-    'UMCSENT',   # 密歇根消费者信心
-    'IORB',      # 准备金余额利率
+    'NAPM', 'NAPMNOI', 'MANEMP', 'UMCSENT', 'IORB',
 ]
 
-
 def fetch(series_id, days=500, retries=3):
+    """核心改造：15秒超时，3次重试，失败后强制打印红字并返回空列表"""
     start = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
     params = {
         'series_id': series_id,
@@ -99,18 +43,22 @@ def fetch(series_id, days=500, retries=3):
         'file_type': 'json',
         'observation_start': start,
     }
-    last_err = None
+    
     for attempt in range(retries):
         try:
-            r = requests.get(BASE, params=params, timeout=30)
+            # 1. 缩短超时时间为 15 秒
+            r = requests.get(BASE, params=params, timeout=15)
             if r.status_code == 500:
-                print(f'{series_id} 500 重试 {attempt+1}/{retries}')
+                print(f'  ⚠️ {series_id} 500 服务器错误，重试 {attempt+1}/{retries}...')
                 time.sleep(3)
                 continue
             r.raise_for_status()
             data = r.json()
             if 'observations' not in data:
-                raise RuntimeError(f'{series_id} 返回异常: {data}')
+                print(f'  ⚠️ {series_id} 返回异常格式，重试 {attempt+1}/{retries}...')
+                time.sleep(3)
+                continue
+                
             rows = []
             for item in data['observations']:
                 if item['value'] == '.':
@@ -122,10 +70,14 @@ def fetch(series_id, days=500, retries=3):
                 })
             return rows
         except Exception as e:
-            last_err = e
-            time.sleep(3)
-    raise last_err
-
+            if attempt < retries - 1:
+                print(f'  ⚠️ {series_id} 请求失败/超时 ({str(e)[:30]})，重试 {attempt+1}/{retries}...')
+                time.sleep(3)
+            else:
+                # 2. 核心改造：彻底失败时的醒目报警
+                print(f'  🔴 [警告] {series_id} 连续 {retries} 次请求失败！跳过该指标，今日数据未更新。')
+    
+    return [] # 返回空列表，防止异常抛出导致整个程序崩溃
 
 def main():
     if not API_KEY:
@@ -134,15 +86,14 @@ def main():
 
     all_rows = []
     for sid in SERIES:
-        try:
-            rows = fetch(sid)
-            print(f'{sid}: {len(rows)} 条')
+        # 直接调用 fetch，内部已经处理了重试和报警
+        rows = fetch(sid)
+        if len(rows) > 0:
+            print(f'  ✅ {sid}: {len(rows)} 条')
             all_rows.extend(rows)
-        except Exception as e:
-            print(f'{sid} 失败: {e}')
 
     if not all_rows:
-        print('❌ 无数据')
+        print('❌ 致命错误: 所有数据均拉取失败，放弃本次写入。')
         sys.exit(1)
 
     df_new = pd.DataFrame(all_rows)
@@ -159,9 +110,7 @@ def main():
 
     df = df.sort_values(['date', 'series'])
     df.to_csv(OUT, index=False)
-    print(f'已保存: {OUT} ({len(df)} 行)')
-    print(df.tail(8).to_string())
-
+    print(f'✅ 已保存: {OUT} ({len(df)} 行)')
 
 if __name__ == '__main__':
     main()
