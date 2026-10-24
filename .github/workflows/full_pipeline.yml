@@ -2,7 +2,7 @@ name: Full Cloud Engine (Backup)
 
 on:
   schedule:
-    - cron: '0 4 * * *'  # 每天 UTC 04:00 (北京 12:00)
+    - cron: '0 4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -21,7 +21,8 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install pandas numpy requests python-dotenv yfinance
+        # 核心修复 1：补上 scikit-learn 等所有依赖
+        run: pip install pandas numpy requests python-dotenv yfinance scikit-learn scipy statsmodels
 
       - name: Build Cloud DB and Run Pipeline
         env:
@@ -31,20 +32,21 @@ jobs:
         run: |
           mkdir -p data
           
-          # 用单独的脚本生成空表和灌入数据，避免 YAML 语法解析错误
           cat << 'EOF' > cloud_setup.py
           import sqlite3
           import pandas as pd
           import os
 
-          # 1. 建基础表
+          # 核心修复 2：提前把需要的空表全部建好
           con = sqlite3.connect('data/macro.db')
           con.execute('CREATE TABLE IF NOT EXISTS observations (series_id TEXT, timestamp TEXT, value REAL, source TEXT, retrieved_at TEXT)')
           con.execute('CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)')
+          con.execute('CREATE TABLE IF NOT EXISTS caps_engine (asof_date TEXT, symbol TEXT, caps_score REAL, PRIMARY KEY(asof_date, symbol))')
+          con.execute('CREATE TABLE IF NOT EXISTS lti_engine (asof_date TEXT PRIMARY KEY, lti_score REAL, level TEXT)')
           con.commit()
           con.close()
 
-          # 2. 把刚才云端采到的 CSV 灌入本地库（直接用 pandas 覆盖，避开主键冲突）
+          # 把刚才云端采到的 CSV 灌入本地库
           csv_path = 'data/feishu_snapshot.csv'
           if os.path.exists(csv_path):
               df = pd.read_csv(csv_path)
@@ -59,13 +61,13 @@ jobs:
           
           python cloud_setup.py
           
-          # 3. 跑覆写（吃进刚才生成的 observations）
+          # 3. 跑覆写
           python tools/apply_feishu_override.py || echo "Override failed"
           
           # 4. 算分位
           python tools/compute_percentile.py || echo "Percentile failed"
           
-          # 5. 运行主引擎
+          # 5. 运行主引擎（如果中间某个引擎出错，也会继续往下走）
           python engines_v3/run_v4.py || echo "Engine failed"
           
           # 6. 推送到手机飞书
