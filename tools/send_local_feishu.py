@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - 全息推演版（直接读取最终结论）"""
+"""tools/send_local_feishu.py - 全息推演版（直接读取最终结论 + N/A兜底）"""
 import os
 import requests
 import json
@@ -27,12 +27,12 @@ def get_latest_data():
         'asof': asof,
         'frag_score': 0.0, 'frag_level': 'N/A',
         'risk_gate': 'UNKNOWN', 'stress_layers': 'NONE',
-        'caps_al': 0.0, 'caps_cu': 0.0,
+        'caps_al': 'N/A', 'caps_cu': 'N/A',  # 核心修改：默认值改为 'N/A'
         'lti_score': 0.0, 'lti_level': 'UNKNOWN',
         'y10': 0.0, 'rrp': 0.0, 'hy_oas': 0.0, 'vix': 0.0,
         'bitget_fr': 0.0, 'coinbase_prem': 0.0, 'hl_imb': 0.0,
         'btc_etf_flow': 0.0, 'fear_greed': 0,
-        'lti_raw_fr': 0.0, 'lti_raw_imb': 0.0  # 新增默认值
+        'lti_raw_fr': 0.0, 'lti_raw_imb': 0.0
     }
     
     try:
@@ -49,11 +49,12 @@ def get_latest_data():
             except:
                 pass
             
-        # 2. CAPS / LTI
+        # 2. CAPS / LTI（增强兜底）
         row = conn.execute("SELECT caps_score FROM caps_engine WHERE asof_date=? AND symbol='SHFE_ALUMINUM'", (asof,)).fetchone()
-        if row: data['caps_al'] = row[0]
+        data['caps_al'] = round(row[0], 1) if row and row[0] is not None else 'N/A'
+        
         row = conn.execute("SELECT caps_score FROM caps_engine WHERE asof_date=? AND symbol='SHFE_COPPER'", (asof,)).fetchone()
-        if row: data['caps_cu'] = row[0]
+        data['caps_cu'] = round(row[0], 1) if row and row[0] is not None else 'N/A'
         
         row = conn.execute("SELECT lti_score, level FROM lti_engine WHERE asof_date=?", (asof,)).fetchone()
         if row:
@@ -117,6 +118,10 @@ def main():
 
     micro_text = "\n".join(micro_alerts) if micro_alerts else "  · 微观结构暂无极端异动"
 
+    # CAPS 图标动态判断（选做优化，让 N/A 看起来不那么突兀）
+    icon_cu = "🟡" if d['caps_cu'] == 'N/A' else ("🚨" if isinstance(d['caps_cu'], float) and d['caps_cu'] >= 60 else "🟡")
+    icon_al = "🚨" if d['caps_al'] == 'N/A' else ("🚨" if isinstance(d['caps_al'], float) and d['caps_al'] >= 60 else "🟡")
+
     text = f"""📊 **GMRE 3.3 全息风控晨报** - {d['asof']}
 ====================================
 🚦 **Risk Gate**: {d['risk_gate']}
@@ -136,8 +141,8 @@ def main():
 {micro_text}
 
 📦 **商品逼仓 (CAPS)**:
-  • 沪铜: 🟡 {d['caps_cu']}
-  • 沪铝: 🚨 {d['caps_al']}
+  • 沪铜: {icon_cu} {d['caps_cu']}
+  • 沪铝: {icon_al} {d['caps_al']}
 
 💧 **清算透明度 (LTI)**:
   • {d['lti_level']} ({d['lti_score']})
