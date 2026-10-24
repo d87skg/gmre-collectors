@@ -40,12 +40,15 @@ jobs:
           import io
           from datetime import datetime
 
-          # 1. 建基础表
+          # 1. 建基础表（全量补齐版）
           con = sqlite3.connect('data/macro.db')
           con.execute('CREATE TABLE IF NOT EXISTS observations (series_id TEXT, timestamp TEXT, value REAL, source TEXT, retrieved_at TEXT)')
           con.execute('CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)')
           con.execute('CREATE TABLE IF NOT EXISTS caps_engine (asof_date TEXT, symbol TEXT, caps_score REAL, PRIMARY KEY(asof_date, symbol))')
           con.execute('CREATE TABLE IF NOT EXISTS lti_engine (asof_date TEXT PRIMARY KEY, lti_score REAL, level TEXT)')
+          # 补齐缺失的商品表和链上表
+          con.execute('CREATE TABLE IF NOT EXISTS commodity_caps (date TEXT, symbol TEXT, open_interest REAL, warehouse_stock REAL, close_price REAL, PRIMARY KEY (date, symbol))')
+          con.execute('CREATE TABLE IF NOT EXISTS san_metrics (datetime TEXT, metric TEXT, slug TEXT, value REAL)')
           con.commit()
           con.close()
 
