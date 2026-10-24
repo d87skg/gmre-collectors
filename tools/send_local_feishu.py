@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - 全息推演版（含核心资产矩阵 + 汇率修复 + N/A兜底）"""
+"""tools/send_local_feishu.py - 全息推演版（含时间兜底修复）"""
 import os
 import requests
 import json
@@ -23,6 +23,9 @@ def gen_sign(timestamp, secret):
 
 def get_latest_data():
     asof = datetime.now().strftime('%Y-%m-%d')
+    # 备选日期：因为时差原因，云端跑的时候飞书可能是前一天的数据
+    asof_yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    
     data = {
         'asof': asof,
         'frag_score': 0.0, 'frag_level': 'N/A',
@@ -33,7 +36,6 @@ def get_latest_data():
         'bitget_fr': 0.0, 'coinbase_prem': 0.0, 'hl_imb': 0.0,
         'btc_etf_flow': 0.0, 'fear_greed': 0,
         'lti_raw_fr': 0.0, 'lti_raw_imb': 0.0,
-        # 大类资产与汇率
         'gold': 0.0, 'silver': 0.0, 'oil': 0.0, 'copper': 0.0,
         'dxy': 0.0, 'usdjpy': 0.0, 'usdcny': 0.0, 'spx': 0.0
     }
@@ -41,25 +43,35 @@ def get_latest_data():
     try:
         conn = sqlite3.connect(DB_PATH)
         
-        # 1. 每日结论
+        # 1. 每日结论（如果今天没有，就去查昨天）
         row = conn.execute("SELECT risk_gate, stress_state, frag_level FROM daily_summary WHERE asof_date=?", (asof,)).fetchone()
+        if not row:
+            row = conn.execute("SELECT risk_gate, stress_state, frag_level FROM daily_summary WHERE asof_date=?", (asof_yesterday,)).fetchone()
+            if row: data['asof'] = asof_yesterday # 更新日期显示
         if row:
             data['risk_gate'] = row[0]
             data['stress_layers'] = row[1]
             data['frag_level'] = row[2]
-            try:
-                data['frag_score'] = float(row[2].split('(')[1].split(')')[0])
-            except:
-                pass
+            try: data['frag_score'] = float(row[2].split('(')[1].split(')')[0])
+            except: pass
             
-        # 2. CAPS / LTI
+        # 2. CAPS / LTI（如果今天没有，就去查昨天）
+        # 查 CAPS 铝
         row = conn.execute("SELECT caps_score FROM caps_engine WHERE asof_date=? AND symbol='SHFE_ALUMINUM'", (asof,)).fetchone()
+        if not row:
+            row = conn.execute("SELECT caps_score FROM caps_engine WHERE asof_date=? AND symbol='SHFE_ALUMINUM'", (asof_yesterday,)).fetchone()
         data['caps_al'] = round(row[0], 1) if row and row[0] is not None else 'N/A'
         
+        # 查 CAPS 铜
         row = conn.execute("SELECT caps_score FROM caps_engine WHERE asof_date=? AND symbol='SHFE_COPPER'", (asof,)).fetchone()
+        if not row:
+            row = conn.execute("SELECT caps_score FROM caps_engine WHERE asof_date=? AND symbol='SHFE_COPPER'", (asof_yesterday,)).fetchone()
         data['caps_cu'] = round(row[0], 1) if row and row[0] is not None else 'N/A'
         
+        # 查 LTI
         row = conn.execute("SELECT lti_score, level FROM lti_engine WHERE asof_date=?", (asof,)).fetchone()
+        if not row:
+            row = conn.execute("SELECT lti_score, level FROM lti_engine WHERE asof_date=?", (asof_yesterday,)).fetchone()
         if row:
             data['lti_score'] = round(row[0], 1)
             data['lti_level'] = row[1]
@@ -74,7 +86,7 @@ def get_latest_data():
         data['hy_oas'] = get_val('HY_SPREAD')
         data['vix'] = get_val('VIX')
         
-        # 4. 最新飞书快照（大类资产、汇率与微观异动）
+        # 4. 最新飞书快照
         row = conn.execute("SELECT * FROM feishu_snapshot ORDER BY timestamp DESC LIMIT 1").fetchone()
         if row:
             cols = [d[0] for d in conn.execute("SELECT * FROM feishu_snapshot LIMIT 1").description]
@@ -96,18 +108,14 @@ def get_latest_data():
             data['usdjpy'] = float(f_data.get('usdjpy', 0) or 0)
             data['spx'] = float(f_data.get('ndx', 0) or 0)
             
-            # 核心修复：读取人民币并智能判断格式
             raw_cny = float(f_data.get('usdcny_mid', 0) or 0)
-            if raw_cny == 0:
-                raw_cny = get_val('USDCNY_MID')
-            # 如果数值大于 10（比如 669.33），说明它被乘以了 100，需要除回来
+            if raw_cny == 0: raw_cny = get_val('USDCNY_MID')
             data['usdcny'] = raw_cny / 100.0 if raw_cny > 10 else raw_cny
 
     except Exception as e:
         print(f"⚠️ 读取数据库失败: {e}")
     finally:
-        if 'conn' in locals():
-            conn.close()
+        if 'conn' in locals(): conn.close()
             
     return data
 
@@ -118,24 +126,16 @@ def main():
 
     d = get_latest_data()
     
-    # 构造微观异动警报
     micro_alerts = []
-    if d['bitget_fr'] > 50:
-        micro_alerts.append(f"🚨 资金费率极度拥挤: {d['bitget_fr']:+.2f}% 年化")
-    if d['coinbase_prem'] < -0.1:
-        micro_alerts.append(f"🇺🇸 机构现货抛压: {d['coinbase_prem']:+.3f}%")
-    if d['hl_imb'] > 0.3:
-        micro_alerts.append(f"📊 盘口买盘堆积 (诱多风险): 不平衡 {d['hl_imb']:+.3f}")
-    elif d['hl_imb'] < -0.3:
-        micro_alerts.append(f"📊 盘口卖压厚 (踩踏风险): 不平衡 {d['hl_imb']:+.3f}")
-    if d['btc_etf_flow'] > 500:
-        micro_alerts.append(f"💰 BTC ETF 大额流入: ${d['btc_etf_flow']:.1f}M")
-    elif d['btc_etf_flow'] < -500:
-        micro_alerts.append(f"💰 BTC ETF 大额流出: ${d['btc_etf_flow']:.1f}M")
+    if d['bitget_fr'] > 50: micro_alerts.append(f"🚨 资金费率极度拥挤: {d['bitget_fr']:+.2f}% 年化")
+    if d['coinbase_prem'] < -0.1: micro_alerts.append(f"🇺🇸 机构现货抛压: {d['coinbase_prem']:+.3f}%")
+    if d['hl_imb'] > 0.3: micro_alerts.append(f"📊 盘口买盘堆积 (诱多风险): 不平衡 {d['hl_imb']:+.3f}")
+    elif d['hl_imb'] < -0.3: micro_alerts.append(f"📊 盘口卖压厚 (踩踏风险): 不平衡 {d['hl_imb']:+.3f}")
+    if d['btc_etf_flow'] > 500: micro_alerts.append(f"💰 BTC ETF 大额流入: ${d['btc_etf_flow']:.1f}M")
+    elif d['btc_etf_flow'] < -500: micro_alerts.append(f"💰 BTC ETF 大额流出: ${d['btc_etf_flow']:.1f}M")
 
     micro_text = "\n".join(micro_alerts) if micro_alerts else "  · 微观结构暂无极端异动"
 
-    # 图标动态判断
     icon_cu = "🟡" if d['caps_cu'] == 'N/A' else ("🚨" if isinstance(d['caps_cu'], float) and d['caps_cu'] >= 60 else "🟡")
     icon_al = "🚨" if d['caps_al'] == 'N/A' else ("🚨" if isinstance(d['caps_al'], float) and d['caps_al'] >= 60 else "🟡")
 
@@ -178,12 +178,7 @@ def main():
 """
     
     ts = str(int(time.time()))
-    payload = {
-        "timestamp": ts,
-        "sign": gen_sign(ts, SECRET),
-        "msg_type": "text",
-        "content": {"text": text}
-    }
+    payload = {"timestamp": ts, "sign": gen_sign(ts, SECRET), "msg_type": "text", "content": {"text": text}}
     
     r = requests.post(WEBHOOK, json=payload, timeout=10)
     if r.status_code == 200 and r.json().get('code') == 0:
