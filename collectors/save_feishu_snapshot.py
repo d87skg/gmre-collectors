@@ -52,6 +52,14 @@ def parse_and_save_snapshot(text):
     m = re.search(r'麦铜比[^:]*:\s*([\d.]+)', text)
     d['wheat_copper_ratio'] = _num(m.group(1)) if m else ''
 
+    # ========== 国债收益率 ==========
+    m = re.search(r'2Y:\s*([\d.]+)%', text)
+    d['us_2y'] = _num(m.group(1)) if m else ''
+    m = re.search(r'10Y:\s*([\d.]+)%', text)
+    d['us_10y'] = _num(m.group(1)) if m else ''
+    m = re.search(r'30Y:\s*([\d.]+)%', text)
+    d['us_30y'] = _num(m.group(1)) if m else ''
+
     # ========== 信用 ==========
     m = re.search(r'HY OAS:\s*(\d+)bp', text)
     d['hy_oas_bp'] = _int(m.group(1)) if m else ''
