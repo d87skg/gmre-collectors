@@ -21,7 +21,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        # 核心修复 1：补上 scikit-learn 等所有依赖
+        # 补上 scikit-learn 等所有依赖
         run: pip install pandas numpy requests python-dotenv yfinance scikit-learn scipy statsmodels
 
       - name: Build Cloud DB and Run Pipeline
@@ -37,7 +37,7 @@ jobs:
           import pandas as pd
           import os
 
-          # 核心修复 2：提前把需要的空表全部建好
+          # 1. 提前把需要的空表全部建好
           con = sqlite3.connect('data/macro.db')
           con.execute('CREATE TABLE IF NOT EXISTS observations (series_id TEXT, timestamp TEXT, value REAL, source TEXT, retrieved_at TEXT)')
           con.execute('CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)')
@@ -46,7 +46,20 @@ jobs:
           con.commit()
           con.close()
 
-          # 把刚才云端采到的 CSV 灌入本地库
+          # ============ 核心修复：加载历史锚点 ============
+          anchor_path = 'data/history_anchor.csv'
+          if os.path.exists(anchor_path):
+              df_anchor = pd.read_csv(anchor_path)
+              conn = sqlite3.connect('data/macro.db')
+              # 将历史数据追加到 observations 表
+              df_anchor.to_sql('observations', conn, if_exists='append', index=False)
+              conn.close()
+              print(f'✅ 历史锚点已加载 ({len(df_anchor)} 条)')
+          else:
+              print('❌ 未找到 history_anchor.csv，引擎可能因为数据不足而偏保守')
+          # ===============================================
+
+          # 2. 把刚才云端采到的最新 CSV 灌入本地库
           csv_path = 'data/feishu_snapshot.csv'
           if os.path.exists(csv_path):
               df = pd.read_csv(csv_path)
@@ -67,7 +80,7 @@ jobs:
           # 4. 算分位
           python tools/compute_percentile.py || echo "Percentile failed"
           
-          # 5. 运行主引擎（如果中间某个引擎出错，也会继续往下走）
+          # 5. 运行主引擎
           python engines_v3/run_v4.py || echo "Engine failed"
           
           # 6. 推送到手机飞书
