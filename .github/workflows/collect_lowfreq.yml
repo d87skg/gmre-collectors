@@ -2,7 +2,7 @@ name: Low Frequency Macro
 
 on:
   schedule:
-    - cron: '15 0 * * *'  # UTC 00:15 (北京 08:15)
+    - cron: '37 0 * * *'  # UTC 00:15 (北京 08:15)
   workflow_dispatch:
 
 permissions:
