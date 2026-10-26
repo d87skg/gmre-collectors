@@ -68,7 +68,6 @@ jobs:
             echo "No changes, skipping commit"
           else
             git commit -m "highfreq data: $(date -u +%Y-%m-%dT%H:%M)"
-            # 核心修复：先拉取远程最新的代码，再推送到 main，彻底告别推送到副分支的烦恼
             git pull --rebase origin main || echo "Pull failed"
             git push origin HEAD:main || echo "Push to main failed"
           fi
