@@ -1,4 +1,4 @@
-"""engines_v3/run_v4.py - GMRE 3.3 完整集成版（审计终版：变量修复）"""
+"""engines_v3/run_v4.py - GMRE 3.3 完整集成版（全功能终极版：中美日德利差）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -6,6 +6,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import io
 import contextlib
 import sqlite3
+import subprocess
+import hashlib
+import json
+import re
 from datetime import datetime
 
 from engines_v2 import (
@@ -21,6 +25,13 @@ from engines_v3 import (
 
 DB_PATH = 'data/macro.db'
 
+def get_git_commit():
+    """获取当前代码的 Git Commit Hash，用于绑定模型版本"""
+    try:
+        commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=os.path.dirname(__file__)).decode('utf-8').strip()
+        return commit_hash[:8]
+    except Exception:
+        return "UNKNOWN"
 
 def get_series_meta(sid):
     """获取序列最新日期和数值，用于溯源审计"""
@@ -35,14 +46,12 @@ def get_series_meta(sid):
         pass
     return "N/A", None
 
-
 def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_confirmed):
     """最终风险等级（GREEN/YELLOW/ORANGE/RED/BLACK）"""
     if systemic_confirmed:
         return 'BLACK', '🚨 系统性危机已确认'
 
     try:
-        # 修复解析 Bug：因为 Fragility 分数是带小数的，比如 68.6
         frag_score = float(frag_level.split('(')[1].split(')')[0])
     except Exception:
         frag_score = 50
@@ -58,7 +67,6 @@ def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_con
 
     return 'GREEN', '🟢 低风险'
 
-
 def main():
     asof = datetime.now().strftime('%Y-%m-%d')
     print(f"\n{'='*60}")
@@ -66,10 +74,17 @@ def main():
     print(f"  R (Macro) + S (Stress) + F (Fragility) + Shock + Transmission")
     print(f"{'='*60}\n")
 
+    audit_status = 'UNKNOWN'
+    regime_label = 'UNKNOWN'
+    p_r4_r5_val = 0.0
+    frag_score_val = 0.0
+    high_risk_prob_str = "0.0"
+
     # ============ 数据自检 ============
     print(f"{'-'*60}")
     try:
         audit = data_quality_check.run_audit(asof)
+        audit_status = audit['status']
         icon = {'PASS': '✅', 'WARN': '⚠️', 'FAIL': '❌'}.get(audit['status'], '?')
         print(f"  {icon} 数据自检: {audit['status']} "
               f"(通过{audit['pass_count']}/警告{audit['warn_count']}/严重{audit['critical_count']})")
@@ -114,6 +129,7 @@ def main():
     try:
         regime = regime_map.run(asof)
         if regime:
+            regime_label = regime['regime_label']
             print(f"  GMS体制: {regime['regime_label']} ({regime['regime_name']})")
             print(f"  置信度: {regime['confidence']*100:.1f}%")
             print(f"  概率分布: {regime['regime_probs']}")
@@ -130,13 +146,35 @@ def main():
         ('标普500', 'SP500', 'Index'),
         ('VIX', 'VIX', 'Index'),
         ('美元/日元', 'USD_JPY', 'Price'),
+        ('中国10Y', 'CN_10Y_YIELD', '%'),
+        ('日本10Y', 'JP_10Y', '%'),
+        ('德国10Y', 'DE_10Y', '%'),
     ]
+    input_snapshot = {}
     for name, sid, unit in audit_sids:
         d, v = get_series_meta(sid)
         if v is not None:
             print(f"    {name:12s}: {d} | 值 = {v:.4f} {unit}")
+            input_snapshot[sid] = v
         else:
             print(f"    {name:12s}: {d} | 值 = N/A")
+            input_snapshot[sid] = None
+    print(f"{'─'*50}")
+
+    # ============ 新增：全球利差监控 ============
+    try:
+        cn10y = get_series_meta('CN_10Y_YIELD')[1]
+        jp10y = get_series_meta('JP_10Y')[1]
+        de10y = get_series_meta('DE_10Y')[1]
+        us10y = get_series_meta('YC10Y')[1]
+        if us10y and cn10y:
+            print(f"  [宏观联动] 中美10Y利差: {us10y - cn10y:+.2f}% (美 {us10y:.2f}% - 中 {cn10y:.2f}%)")
+        if us10y and jp10y:
+            print(f"  [宏观联动] 美日10Y利差: {us10y - jp10y:+.2f}% (美 {us10y:.2f}% - 日 {jp10y:.2f}%)")
+        if us10y and de10y:
+            print(f"  [宏观联动] 美德10Y利差: {us10y - de10y:+.2f}% (美 {us10y:.2f}% - 德 {de10y:.2f}%)")
+    except Exception:
+        pass
     print(f"{'─'*50}")
 
     # ============ 轨道2：Stress Overlay V2 ============
@@ -163,15 +201,15 @@ def main():
     for name, fn in [
         ('Positioning', lambda: __import__('engines_v3.positioning_engine', fromlist=['evaluate_positioning']).evaluate_positioning(asof)),
         ('Velocity', lambda: __import__('engines_v3.velocity_engine', fromlist=['evaluate_velocity']).evaluate_velocity(asof)),
-        # Probability 取消重定向，直接让审计矩阵打印出来
         ('Probability', lambda: __import__('engines_v3.probability_engine', fromlist=['evaluate_probability']).evaluate_probability(asof)),
         ('Contagion', lambda: __import__('engines_v3.contagion_engine', fromlist=['compute_contagion']).compute_contagion(asof)),
     ]:
         print(f"  [{name:12s}] ", end='', flush=True)
         try:
             if name == 'Probability':
-                r = fn()  # 不拦截输出
-                print(f"       ↳ 最终概率 P(R4+R5)={r['high_risk_prob']*100:.4f}% (见上方审计矩阵)")
+                r = fn()
+                p_r4_r5_val = r['high_risk_prob']
+                print(f"       ↳ 最终概率 P(R4+R5)={p_r4_r5_val*100:.4f}% (见上方审计矩阵)")
             else:
                 with contextlib.redirect_stdout(io.StringIO()):
                     r = fn()
@@ -207,6 +245,7 @@ def main():
         with contextlib.redirect_stdout(io.StringIO()):
             frag = fragility_engine.compute_fragility(asof)
         frag_level = f"{frag['level']} ({frag['fragility_score']})"
+        frag_score_val = frag['fragility_score']
         print(frag_level)
     except Exception as e:
         print(f"❌ {str(e)[:50]}")
@@ -248,7 +287,7 @@ def main():
         with contextlib.redirect_stdout(io.StringIO()):
             lti = lti_engine.compute_lti(asof)
         icon = "🚨" if lti['level'] in ("EXTREME", "HIGH") else "🟡" if lti['level'] == "MEDIUM" else "🟢"
-        print(f"{icon} {lti['lti_score']}/100 ({lti['level']}) | FR差异 {lti['raw']['fr_cross_diff']}% | HL不平衡 {lti['raw']['hl_imbalance']}")
+        print(f"{icon} {lti['lti_score']}/100 ({lti['level']}) | FR差异 {lti['raw']['fr_cross_diff']}% | 持仓24H变幅 {lti['raw']['hl_imbalance']:+.2f}%")
     except Exception as e:
         print(f"❌ {str(e)[:50]}")
 
@@ -271,7 +310,7 @@ def main():
     except Exception as e:
         print(f"    ❌ {str(e)[:50]}")
 
-    # ============ 计算最终风险等级 (提前计算，修复变量作用域 Bug) ============
+    # ============ 计算最终风险等级 ============
     contagion_status = 'NORMAL'
     gate, gate_msg = compute_risk_gate(
         frag_level,
@@ -331,7 +370,7 @@ def main():
     except Exception as e:
         print(f"  ⚠️ 对冲模块异常: {e}")
 
-    # ============ 执行：防线 V4（带数据时间戳） ============
+    # ============ 执行：防线 V4 ============
     print(f"\n┌{'─'*58}┐")
     print(f"│  【执行】防线0-7（传导变量驱动）                    │")
     print(f"└{'─'*58}┘\n")
@@ -364,7 +403,7 @@ def main():
     except Exception as e:
         print(f"  ⚠️ 失效条件检查异常: {e}")
 
-    # ============ VS5-VS7：GMRE 3.3 高级智能层 ============
+    # ============ 高级智能层 ============
     print(f"\n┌{'─'*58}┐")
     print(f"│  【高级】历史指纹 + 情景树 + 每日报告              │")
     print(f"└{'─'*58}┘\n")
@@ -452,16 +491,63 @@ def main():
     print(f"  Base Regime: {_regime_display} | Fragility: {_frag_display} | Risk Gate: {gate}")
     print(f"{'='*60}\n")
 
-    # ============ 核心结论落表 ============
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""CREATE TABLE IF NOT EXISTS daily_summary (
-        asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)""")
-    conn.execute("""INSERT OR REPLACE INTO daily_summary 
-        (asof_date, risk_gate, stress_state, frag_level) VALUES (?, ?, ?, ?)""",
-        (asof, gate, stress.get('overall', 'NONE'), frag_level))
-    conn.commit()
-    conn.close()
+    # ============ P0-B: 核心结论落表与不可篡改预测日志 ============
+    try:
+        snapshot_str = json.dumps(input_snapshot, sort_keys=True)
+        input_hash = hashlib.sha256(snapshot_str.encode('utf-8')).hexdigest()[:16]
+        code_commit = get_git_commit()
 
+        conn = sqlite3.connect(DB_PATH)
+        
+        conn.execute("""CREATE TABLE IF NOT EXISTS daily_summary (
+            asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)""")
+        conn.execute("""INSERT OR REPLACE INTO daily_summary 
+            (asof_date, risk_gate, stress_state, frag_level) VALUES (?, ?, ?, ?)""",
+            (asof, gate, stress.get('overall', 'NONE'), frag_level))
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS predictions_log (
+                forecast_date TEXT PRIMARY KEY,
+                model_version TEXT,
+                code_commit TEXT,
+                input_snapshot_hash TEXT,
+                regime TEXT,
+                p_r4_r5 REAL,
+                fragility_score REAL,
+                risk_gate TEXT,
+                data_quality_state TEXT,
+                details_json TEXT
+            )
+        """)
+        
+        details = {
+            "regime": regime,
+            "stress": stress.get('overall', 'NONE'),
+            "fragility_level": frag_level,
+            "contagion": contagion_status,
+            "gate_msg": gate_msg,
+            "data_audit": {"status": audit_status}
+        }
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO predictions_log 
+            (forecast_date, model_version, code_commit, input_snapshot_hash, regime, p_r4_r5, fragility_score, risk_gate, data_quality_state, details_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            asof, 'GMRE_3.3', code_commit, input_hash, 
+            regime_label, p_r4_r5_val, frag_score_val, gate, audit_status, json.dumps(details, ensure_ascii=False)
+        ))
+        
+        if cursor.rowcount > 0:
+            print(f"✅ [P0-B] 不可篡改预测日志已归档 (Hash: {input_hash}, Commit: {code_commit})")
+        else:
+            print(f"⚠️ [P0-B] 今日 ({asof}) 预测日志已存在，拒绝覆盖，保持历史原样。")
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ [P0-B] 预测日志归档失败: {e}")
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,273 @@
+卷 Data 的文件夹 PATH 列表
+卷序列号为 D8B1-3A8D
+D:.
+|   .gitignore
+|   gmre_core_export_20261003_221221.zip
+|   gmre_deps_export_20261004_083849.zip
+|   test_socrata_fin.bat
+|   tree_collectors.txt
+|   
++---.github
+|   \---workflows
+|           collect.yml.bak
+|           collect_highfreq.yml
+|           collect_lowfreq.yml
+|           full_pipeline.yml
+|           
++---.vs
+|   |   ProjectSettings.json
+|   |   slnx.sqlite
+|   |   VSWorkspaceState.json
+|   |   
+|   \---HGZC-collectors.slnx
+|       +---FileContentIndex
+|       |       0fffbbb6-db6b-4974-a83e-70546e9e9ec3.vsidx
+|       |       41281206-bc1e-4616-8989-04d7e41081b5.vsidx
+|       |       4ee98685-a054-4026-80be-ffcd0c1fbdd2.vsidx
+|       |       4fd3d2d0-83de-4a42-b280-e309f8164103.vsidx
+|       |       97411a3e-5c84-441e-a5ca-dd01cd1eaa3e.vsidx
+|       |       
+|       \---v18
+|               DocumentLayout.backup.json
+|               DocumentLayout.json
+|               
++---collectors
+|   |   akshare_china.py
+|   |   bgeometrics.py
+|   |   bgeometrics_onchain.py
+|   |   binance_funding.py
+|   |   binance_oi.py
+|   |   binance_sentiment.py
+|   |   bis_cbpol.py
+|   |   blockchain_com.py
+|   |   boj_rates.py
+|   |   bybit_perp.py
+|   |   cftc_socrata.py
+|   |   coingecko_derivatives.py
+|   |   coingecko_exchange_vol.py
+|   |   coingecko_global.py
+|   |   coingecko_stablecoins.py
+|   |   coinglass_aggregate.py
+|   |   coinglass_fr.py
+|   |   defillama_flows.py
+|   |   defillama_stablecoin.py
+|   |   deribit_dvol.py
+|   |   deribit_perp.py
+|   |   deribit_skew.py
+|   |   ecb_rates.py
+|   |   eurostat_hicp.py
+|   |   farside_etf.py
+|   |   farside_eth_etf.py
+|   |   fear_greed.py
+|   |   fetch_fedwatch.py
+|   |   fred_macro.py
+|   |   hourly_all.py
+|   |   hyperliquid_depth.py
+|   |   hyperliquid_liquidation.py
+|   |   hyperliquid_mark.py
+|   |   lme_commodity.py
+|   |   notify_feishu.py
+|   |   nyfed_rates.py
+|   |   okx_funding.py
+|   |   okx_liquidation.py
+|   |   okx_oi.py
+|   |   save_feishu_snapshot.py
+|   |   treasury_tga.py
+|   |   usde_anchor.py
+|   |   us_institution.py
+|   |   worldbank_reserves.py
+|   |   yahoo_market.py
+|   |   
+|   \---__pycache__
+|           hourly_all.cpython-312.pyc
+|           
++---core
+|   |   config.py
+|   |   database.py
+|   |   hashing.py
+|   |   http_client.py
+|   |   normalizer.py
+|   |   pit.py
+|   |   schema.py
+|   |   validator.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           config.cpython-312.pyc
+|           database.cpython-312.pyc
+|           hashing.cpython-312.pyc
+|           http_client.cpython-312.pyc
+|           normalizer.cpython-312.pyc
+|           pit.cpython-312.pyc
+|           schema.cpython-312.pyc
+|           validator.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---data
+|   |   bgeometrics_onchain.csv
+|   |   binance_funding.csv
+|   |   binance_oi.csv
+|   |   binance_sentiment.csv
+|   |   bis_cbpol.csv
+|   |   blockchain_com.csv
+|   |   boj_rates.csv
+|   |   bybit_perp.csv
+|   |   cftc_cot.csv
+|   |   cftc_fx.csv
+|   |   cme_fedwatch.csv
+|   |   coingecko_derivatives.csv
+|   |   coingecko_exchange_vol.csv
+|   |   coingecko_global.csv
+|   |   coingecko_stablecoins.csv
+|   |   commodity_anchor.csv
+|   |   commodity_micro.csv
+|   |   crypto_micro.csv
+|   |   defillama_stablecoin.csv
+|   |   defillama_stablecoin_detail.csv
+|   |   deribit_dvol.csv
+|   |   deribit_funding.csv
+|   |   deribit_oi.csv
+|   |   deribit_skew.csv
+|   |   ecb_rates.csv
+|   |   eurostat_hicp.csv
+|   |   farside_btc_etf.csv
+|   |   farside_eth_etf.csv
+|   |   fear_greed.csv
+|   |   feishu_snapshot.csv
+|   |   fred_macro.csv
+|   |   history_anchor.csv
+|   |   hyperliquid.csv
+|   |   hyperliquid_depth.csv
+|   |   nyfed_rates.csv
+|   |   okx_funding.csv
+|   |   okx_liquidation.csv
+|   |   okx_oi.csv
+|   |   treasury_tga.csv
+|   |   us_institution.csv
+|   |   worldbank_reserves.csv
+|   |   yahoo_market.csv
+|   |   
+|   \---lti
+|           usde_anchor.csv
+|           
++---engines_v2
+|   |   base_engine.py
+|   |   data_quality_check.py
+|   |   data_quality_check.py.bak
+|   |   data_quality_check.py.bak2
+|   |   data_quality_check.py.bak_p2
+|   |   data_quality_check.py.bak_p2b
+|   |   dau_alert.py
+|   |   defense_matrix.py
+|   |   engine_fis.py
+|   |   engine_inf.py
+|   |   engine_liq.py
+|   |   engine_mon.py
+|   |   engine_risk.py
+|   |   hedge_advisor.py
+|   |   liquidity_alert.py
+|   |   liquidity_alert.py.bak
+|   |   liquidity_alert.py.bak2
+|   |   liquidity_alert.py.bak3
+|   |   liquidity_alert.py.bak4
+|   |   liquidity_alert.py.bak5
+|   |   regime_map.py
+|   |   run_v2.py
+|   |   sofr_monitor.py
+|   |   yen_carry_state.py
+|   |   __init__.py
+|   |   
+|   +---output
+|   \---__pycache__
+|           base_engine.cpython-312.pyc
+|           data_quality_check.cpython-312.pyc
+|           dau_alert.cpython-312.pyc
+|           defense_matrix.cpython-312.pyc
+|           engine_fis.cpython-312.pyc
+|           engine_inf.cpython-312.pyc
+|           engine_liq.cpython-312.pyc
+|           engine_mon.cpython-312.pyc
+|           engine_risk.cpython-312.pyc
+|           hedge_advisor.cpython-312.pyc
+|           liquidity_alert.cpython-312.pyc
+|           regime_map.cpython-312.pyc
+|           sofr_monitor.cpython-312.pyc
+|           yen_carry_state.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---engines_v3
+|   |   calibration_tracker.py
+|   |   caps_engine.py
+|   |   contagion_engine.py
+|   |   crisis_fingerprint.py
+|   |   daily_intelligence.py
+|   |   data_correction.py
+|   |   defense_v3.py
+|   |   defense_v4.py
+|   |   defense_v4.py.bak
+|   |   defense_v4.py.bak2
+|   |   defense_v4.py.bak_hy
+|   |   defense_v4.py.bak_hy2
+|   |   engine_fis_v2.py
+|   |   engine_inf_expect.py
+|   |   engine_mon_v2.py
+|   |   fragility_engine.py
+|   |   generate_report.py
+|   |   invalidation_conditions.py
+|   |   invalidation_conditions.py.bak_hy
+|   |   invalidation_conditions.py.bak_hy2
+|   |   live_scorecard.py
+|   |   lti_engine.py
+|   |   positioning_engine.py
+|   |   probability_engine.py
+|   |   run_v3.py
+|   |   run_v4.py
+|   |   run_v4.py.bak_p0
+|   |   run_v4.py.bak_p0b
+|   |   scenario_tree.py
+|   |   shock_engine.py
+|   |   stress_overlay.py
+|   |   stress_overlay_v2.py
+|   |   stress_overlay_v2.py.bak
+|   |   stress_overlay_v2.py.bak2
+|   |   stress_overlay_v2.py.bak3
+|   |   transmission_graph.py
+|   |   velocity_engine.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           calibration_tracker.cpython-312.pyc
+|           caps_engine.cpython-312.pyc
+|           contagion_engine.cpython-312.pyc
+|           crisis_fingerprint.cpython-312.pyc
+|           daily_intelligence.cpython-312.pyc
+|           defense_v3.cpython-312.pyc
+|           defense_v4.cpython-312.pyc
+|           engine_fis_v2.cpython-312.pyc
+|           engine_inf_expect.cpython-312.pyc
+|           engine_mon_v2.cpython-312.pyc
+|           fragility_engine.cpython-312.pyc
+|           invalidation_conditions.cpython-312.pyc
+|           live_scorecard.cpython-312.pyc
+|           lti_engine.cpython-312.pyc
+|           positioning_engine.cpython-312.pyc
+|           probability_engine.cpython-312.pyc
+|           run_v4.cpython-312.pyc
+|           scenario_tree.cpython-312.pyc
+|           shock_engine.cpython-312.pyc
+|           stress_overlay.cpython-312.pyc
+|           stress_overlay_v2.cpython-312.pyc
+|           transmission_graph.cpython-312.pyc
+|           velocity_engine.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
+\---tools
+        alert_fr.py
+        apply_feishu_override.py
+        compute_percentile.py
+        rrp_guard.py
+        send_local_feishu.py
+        sync_commodity_github.py
+        sync_feishu_snapshot.py
+        __init__.py
+        
