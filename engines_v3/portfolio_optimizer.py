@@ -30,7 +30,7 @@ def get_data_health():
     return "⚠️ 异常源: " + " | ".join(health_report)
 
 def get_portfolio_advice(risk_gate, frag_score):
-    """基于风险平价（目标波动率倒数加权）计算仓位"""
+    """基于风险平价（目标波动率倒数加权）计算仓位，并加入拥挤度惩罚"""
     conn = sqlite3.connect(DB_PATH)
     
     # 1. 获取大类资产近 20 日序列计算波动率
@@ -43,18 +43,20 @@ def get_portfolio_advice(risk_gate, frag_score):
     for name, sid in assets.items():
         df = pd.read_sql_query(f"SELECT value FROM observations WHERE series_id='{sid}' ORDER BY timestamp DESC LIMIT 20", conn)
         if len(df) > 5:
-            # 计算日收益率标准差
             returns = df['value'].pct_change().dropna()
             vols[name] = returns.std() if returns.std() > 0 else 0.02
         else:
-            vols[name] = 0.02 # 默认值
+            vols[name] = 0.02
             
+    # 获取最新的 LTI 评分
+    lti_row = conn.execute("SELECT lti_score FROM lti_engine ORDER BY asof_date DESC LIMIT 1").fetchone()
+    current_lti = lti_row[0] if lti_row else 0
     conn.close()
 
-    # 2. 根据 Risk Gate 设定总风险预算 (Target Vol)
+    # 2. 根据 Risk Gate 设定总风险预算
     if risk_gate == 'RED':
-        target_vol = 0.03  # 极低风险预算
-        base_cash = 0.60   # 至少留 60% 现金
+        target_vol = 0.03
+        base_cash = 0.60
     elif risk_gate == 'ORANGE':
         target_vol = 0.08
         base_cash = 0.30
@@ -75,16 +77,23 @@ def get_portfolio_advice(risk_gate, frag_score):
     total_risk_assets_weight = 1.0 - base_cash
     
     for k, inv_v in inv_vols.items():
-        # 基础配置比例
         weight = (inv_v / total_inv_vol) * total_risk_assets_weight
-        # 根据目标波动率进行杠杆缩放 (防止极端波动下超配)
         weight = weight * (target_vol / 0.10) 
-        weights[k] = round(weight * 100, 1)
+        weights[k] = weight
 
-    # 归一化，确保总和等于 (1 - base_cash)
+    # ============ 核心修复：加入拥挤度惩罚 ============
+    # 如果 LTI > 60 (多头极度拥挤)，强制削减 BTC 仓位 50%，并将仓位转入现金
+    if current_lti > 60 and 'BTC' in weights:
+        cut_weight = weights['BTC'] * 0.5
+        weights['BTC'] -= cut_weight
+        base_cash += cut_weight
+        print(f"⚠️ [拥挤度惩罚] 当前 LTI={current_lti}，强制削减 BTC 仓位，增加现金。")
+    # ==================================================
+
+    # 归一化，转为百分比
     current_total = sum(weights.values())
     if current_total > 0:
         scale = (total_risk_assets_weight * 100) / current_total
         weights = {k: round(v * scale, 1) for k, v in weights.items()}
 
-    return weights, base_cash * 100
+    return weights, round(base_cash * 100, 1)
