@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - 全息推演版（优先读取底层真实价格）"""
+"""tools/send_local_feishu.py - 全息推演版（真实资产优先 + 智能读取最新结论）"""
 import os
 import requests
 import json
@@ -40,19 +40,21 @@ def get_latest_data():
     try:
         conn = sqlite3.connect(DB_PATH)
         
-        # 1. 核心结论
+        # 1. 每日结论
         row = conn.execute("SELECT risk_gate, stress_state, frag_level FROM daily_summary WHERE asof_date=?", (asof,)).fetchone()
         if row:
             data['risk_gate'], data['stress_layers'], data['frag_level'] = row[0], row[1], row[2]
             try: data['frag_score'] = float(row[2].split('(')[1].split(')')[0])
             except: pass
             
-        row = conn.execute("SELECT caps_score FROM caps_engine WHERE asof_date=? AND symbol='SHFE_ALUMINUM'", (asof,)).fetchone()
+        # ============ 核心修复：智能读取最新结论（不查今天，查最新） ============
+        row = conn.execute("SELECT caps_score FROM caps_engine WHERE symbol='SHFE_ALUMINUM' ORDER BY asof_date DESC LIMIT 1").fetchone()
         data['caps_al'] = round(row[0], 1) if row and row[0] is not None else 'N/A'
-        row = conn.execute("SELECT caps_score FROM caps_engine WHERE asof_date=? AND symbol='SHFE_COPPER'", (asof,)).fetchone()
+        row = conn.execute("SELECT caps_score FROM caps_engine WHERE symbol='SHFE_COPPER' ORDER BY asof_date DESC LIMIT 1").fetchone()
         data['caps_cu'] = round(row[0], 1) if row and row[0] is not None else 'N/A'
-        row = conn.execute("SELECT lti_score, level FROM lti_engine WHERE asof_date=?", (asof,)).fetchone()
+        row = conn.execute("SELECT lti_score, level FROM lti_engine ORDER BY asof_date DESC LIMIT 1").fetchone()
         if row: data['lti_score'], data['lti_level'] = round(row[0], 1), row[1]
+        # ========================================================================
 
         def get_val(sid):
             r = conn.execute("SELECT value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 1", (sid,)).fetchone()
@@ -72,7 +74,7 @@ def get_latest_data():
         data['hy_oas'] = get_val('HY_SPREAD')
         data['vix'] = get_val('VIX')
         
-        # 3. 加密微观数据（直接从底库读真实值）
+        # 3. 加密微观数据
         fr_row = conn.execute("SELECT value FROM observations WHERE series_id='BTC_FUNDING_RATE_1H' ORDER BY timestamp DESC LIMIT 1").fetchone()
         data['bitget_fr'] = (fr_row[0] if fr_row else 0.0) * 3 * 365 * 100
         data['lti_raw_fr'] = data['bitget_fr']
@@ -81,7 +83,7 @@ def get_latest_data():
         data['hl_imb'] = ((oi_rows[0][0] - oi_rows[288][0]) / oi_rows[288][0] * 100) if len(oi_rows) >= 288 and oi_rows[288][0] else 0.0
         data['lti_raw_imb'] = data['hl_imb']
 
-        # 4. 从飞书快照补充其余零碎数据，但大类资产强制用本地 observations 的最新价
+        # 4. 飞书快照补充与真实价格优先
         row = conn.execute("SELECT * FROM feishu_snapshot ORDER BY timestamp DESC LIMIT 1").fetchone()
         if row:
             cols = [d[0] for d in conn.execute("SELECT * FROM feishu_snapshot LIMIT 1").description]
@@ -94,7 +96,7 @@ def get_latest_data():
             data['copper'] = float(f_data.get('copper', 0) or 0)
             data['spx'] = float(f_data.get('ndx', 0) or 0)
             
-            # ============ 核心修复：优先取 obs 库真实价，取不到再用快照 ============
+            # 优先取 obs 库真实价
             data['gold'] = get_val('GOLD_PRICE') or float(f_data.get('gold', 0) or 0)
             data['oil'] = get_val('WTI_OIL') or float(f_data.get('oil', 0) or 0)
             data['dxy'] = get_val('DXY_PROXY') or float(f_data.get('dxy', 0) or 0)
