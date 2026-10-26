@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - 全息推演版（接入日欧利差与真实历史金矿）"""
+"""tools/send_local_feishu.py - 全息推演版（优先读取底层真实价格）"""
 import os
 import requests
 import json
@@ -39,6 +39,8 @@ def get_latest_data():
     
     try:
         conn = sqlite3.connect(DB_PATH)
+        
+        # 1. 核心结论
         row = conn.execute("SELECT risk_gate, stress_state, frag_level FROM daily_summary WHERE asof_date=?", (asof,)).fetchone()
         if row:
             data['risk_gate'], data['stress_layers'], data['frag_level'] = row[0], row[1], row[2]
@@ -56,6 +58,7 @@ def get_latest_data():
             r = conn.execute("SELECT value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 1", (sid,)).fetchone()
             return r[0] if r else 0.0
             
+        # 2. 宏观数据与全球利差
         data['y10'] = get_val('YC10Y')
         data['cn10y'] = get_val('CN_10Y_YIELD')
         data['jp10y'] = get_val('JP_10Y')
@@ -69,6 +72,7 @@ def get_latest_data():
         data['hy_oas'] = get_val('HY_SPREAD')
         data['vix'] = get_val('VIX')
         
+        # 3. 加密微观数据（直接从底库读真实值）
         fr_row = conn.execute("SELECT value FROM observations WHERE series_id='BTC_FUNDING_RATE_1H' ORDER BY timestamp DESC LIMIT 1").fetchone()
         data['bitget_fr'] = (fr_row[0] if fr_row else 0.0) * 3 * 365 * 100
         data['lti_raw_fr'] = data['bitget_fr']
@@ -77,6 +81,7 @@ def get_latest_data():
         data['hl_imb'] = ((oi_rows[0][0] - oi_rows[288][0]) / oi_rows[288][0] * 100) if len(oi_rows) >= 288 and oi_rows[288][0] else 0.0
         data['lti_raw_imb'] = data['hl_imb']
 
+        # 4. 从飞书快照补充其余零碎数据，但大类资产强制用本地 observations 的最新价
         row = conn.execute("SELECT * FROM feishu_snapshot ORDER BY timestamp DESC LIMIT 1").fetchone()
         if row:
             cols = [d[0] for d in conn.execute("SELECT * FROM feishu_snapshot LIMIT 1").description]
@@ -84,22 +89,23 @@ def get_latest_data():
             data['coinbase_prem'] = min(max(float(f_data.get('coinbase_premium', 0) or 0), -10.0), 10.0)
             data['btc_etf_flow'] = float(f_data.get('btc_etf_flow_usd_m', 0) or 0)
             data['fear_greed'] = int(float(f_data.get('fear_greed', 0) or 0))
-            data['gold'] = float(f_data.get('gold', 0) or 0)
+            
             data['silver'] = float(f_data.get('silver', 0) or 0)
-            data['oil'] = float(f_data.get('oil', 0) or 0)
             data['copper'] = float(f_data.get('copper', 0) or 0)
-            data['dxy'] = float(f_data.get('dxy', 0) or 0)
-            data['usdjpy'] = float(f_data.get('usdjpy', 0) or 0)
             data['spx'] = float(f_data.get('ndx', 0) or 0)
             
-            # ============ 修复美元/人民币 ============
+            # ============ 核心修复：优先取 obs 库真实价，取不到再用快照 ============
+            data['gold'] = get_val('GOLD_PRICE') or float(f_data.get('gold', 0) or 0)
+            data['oil'] = get_val('WTI_OIL') or float(f_data.get('oil', 0) or 0)
+            data['dxy'] = get_val('DXY_PROXY') or float(f_data.get('dxy', 0) or 0)
+            data['usdjpy'] = get_val('USD_JPY') or float(f_data.get('usdjpy', 0) or 0)
+            
             raw_cny = float(f_data.get('usdcny_mid', 0) or 0)
             if raw_cny == 0:
                 r_cny = conn.execute("SELECT value FROM observations WHERE series_id='USDCNY_MID' AND value > 0 ORDER BY timestamp DESC LIMIT 1").fetchone()
                 raw_cny = r_cny[0] if r_cny else 0.0
             data['usdcny'] = raw_cny / 100.0 if raw_cny > 10 else raw_cny
-            # ======================================
-            
+
     except Exception as e: print(f"⚠️ 读取数据库失败: {e}")
     finally:
         if 'conn' in locals(): conn.close()
@@ -121,10 +127,8 @@ def main():
 
     icon_cu = "⚪" if d['caps_cu'] == 'N/A' else ("🚨" if isinstance(d['caps_cu'], float) and d['caps_cu'] >= 60 else "🟡")
     icon_al = "⚪" if d['caps_al'] == 'N/A' else ("🚨" if isinstance(d['caps_al'], float) and d['caps_al'] >= 60 else "🟡")
-    bj_time = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
-
-    # 格式化人民币汇率展示
     cny_display = f"{d['usdcny']:.4f}" if d['usdcny'] > 0 else "N/A"
+    bj_time = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
 
     text = f"""📊 **GMRE 3.3 全息风控晨报** - {d['asof']}
 ====================================
