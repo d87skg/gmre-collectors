@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - 全息推演版（真实资产优先 + 智能读取最新结论）"""
+"""tools/send_local_feishu.py - 全息推演版（含仓位建议与数据健康度）"""
 import os
 import requests
 import json
@@ -10,6 +10,11 @@ import time
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+
+# 引入刚才写的仓位引擎
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from engines_v3.portfolio_optimizer import get_portfolio_advice, get_data_health
 
 load_dotenv(r'D:\HGZC\.env')
 WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
@@ -40,27 +45,23 @@ def get_latest_data():
     try:
         conn = sqlite3.connect(DB_PATH)
         
-        # 1. 每日结论
         row = conn.execute("SELECT risk_gate, stress_state, frag_level FROM daily_summary WHERE asof_date=?", (asof,)).fetchone()
         if row:
             data['risk_gate'], data['stress_layers'], data['frag_level'] = row[0], row[1], row[2]
             try: data['frag_score'] = float(row[2].split('(')[1].split(')')[0])
             except: pass
             
-        # ============ 核心修复：智能读取最新结论（不查今天，查最新） ============
         row = conn.execute("SELECT caps_score FROM caps_engine WHERE symbol='SHFE_ALUMINUM' ORDER BY asof_date DESC LIMIT 1").fetchone()
         data['caps_al'] = round(row[0], 1) if row and row[0] is not None else 'N/A'
         row = conn.execute("SELECT caps_score FROM caps_engine WHERE symbol='SHFE_COPPER' ORDER BY asof_date DESC LIMIT 1").fetchone()
         data['caps_cu'] = round(row[0], 1) if row and row[0] is not None else 'N/A'
         row = conn.execute("SELECT lti_score, level FROM lti_engine ORDER BY asof_date DESC LIMIT 1").fetchone()
         if row: data['lti_score'], data['lti_level'] = round(row[0], 1), row[1]
-        # ========================================================================
 
         def get_val(sid):
             r = conn.execute("SELECT value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 1", (sid,)).fetchone()
             return r[0] if r else 0.0
             
-        # 2. 宏观数据与全球利差
         data['y10'] = get_val('YC10Y')
         data['cn10y'] = get_val('CN_10Y_YIELD')
         data['jp10y'] = get_val('JP_10Y')
@@ -74,7 +75,6 @@ def get_latest_data():
         data['hy_oas'] = get_val('HY_SPREAD')
         data['vix'] = get_val('VIX')
         
-        # 3. 加密微观数据
         fr_row = conn.execute("SELECT value FROM observations WHERE series_id='BTC_FUNDING_RATE_1H' ORDER BY timestamp DESC LIMIT 1").fetchone()
         data['bitget_fr'] = (fr_row[0] if fr_row else 0.0) * 3 * 365 * 100
         data['lti_raw_fr'] = data['bitget_fr']
@@ -83,7 +83,6 @@ def get_latest_data():
         data['hl_imb'] = ((oi_rows[0][0] - oi_rows[288][0]) / oi_rows[288][0] * 100) if len(oi_rows) >= 288 and oi_rows[288][0] else 0.0
         data['lti_raw_imb'] = data['hl_imb']
 
-        # 4. 飞书快照补充与真实价格优先
         row = conn.execute("SELECT * FROM feishu_snapshot ORDER BY timestamp DESC LIMIT 1").fetchone()
         if row:
             cols = [d[0] for d in conn.execute("SELECT * FROM feishu_snapshot LIMIT 1").description]
@@ -91,12 +90,10 @@ def get_latest_data():
             data['coinbase_prem'] = min(max(float(f_data.get('coinbase_premium', 0) or 0), -10.0), 10.0)
             data['btc_etf_flow'] = float(f_data.get('btc_etf_flow_usd_m', 0) or 0)
             data['fear_greed'] = int(float(f_data.get('fear_greed', 0) or 0))
-            
             data['silver'] = float(f_data.get('silver', 0) or 0)
             data['copper'] = float(f_data.get('copper', 0) or 0)
             data['spx'] = float(f_data.get('ndx', 0) or 0)
             
-            # 优先取 obs 库真实价
             data['gold'] = get_val('GOLD_PRICE') or float(f_data.get('gold', 0) or 0)
             data['oil'] = get_val('WTI_OIL') or float(f_data.get('oil', 0) or 0)
             data['dxy'] = get_val('DXY_PROXY') or float(f_data.get('dxy', 0) or 0)
@@ -117,6 +114,25 @@ def main():
     if not WEBHOOK or not SECRET: return
     d = get_latest_data()
     
+    # ============ P0级升级：获取仓位建议与数据健康度 ============
+    try:
+        weights, cash_pct = get_portfolio_advice(d['risk_gate'], d['frag_score'])
+        health_text = get_data_health()
+    except Exception as e:
+        weights = {'BTC': 0, 'GOLD': 0, 'US10Y': 0}
+        cash_pct = 100
+        health_text = f"❌ 仓位引擎异常: {e}"
+
+    # 生成行动指南
+    action_guide = ""
+    if d['risk_gate'] == 'RED':
+        action_guide = "⚠️ 行动指南：现金为王，久期与杠杆降至最低，切勿追高接飞刀。"
+    elif d['risk_gate'] == 'ORANGE':
+        action_guide = "⚖️ 行动指南：保持防守，控制仓位，等待右侧信号。"
+    else:
+        action_guide = "🟢 行动指南：可适度提升风险敞口，顺势而为。"
+    # =========================================================
+
     micro_alerts = []
     if d['bitget_fr'] > 50: micro_alerts.append(f"🚨 资金费率极度拥挤: {d['bitget_fr']:+.2f}% 年化")
     if d['coinbase_prem'] < -0.1: micro_alerts.append(f"🇺🇸 机构现货抛压: {d['coinbase_prem']:+.3f}%")
@@ -137,6 +153,13 @@ def main():
 🚦 **Risk Gate**: {d['risk_gate']}
 ⚠️ **Fragility**: {d['frag_level']}
 😱 **情绪指数**: {d['fear_greed']} (Fear & Greed)
+{action_guide}
+====================================
+💼 **风险平价仓位建议 (Risk Parity)**:
+  • 现金留存: {cash_pct:.1f}% (避险基石)
+  • BTC 仓位: {weights.get('BTC', 0):.1f}%
+  • 黄金仓位: {weights.get('GOLD', 0):.1f}%
+  • 美债 10Y: {weights.get('US10Y', 0):.1f}%
 
 🌍 **大类资产与汇率矩阵**:
   • 黄金: ${d['gold']:.2f} | 白银: ${d['silver']:.2f}
@@ -163,6 +186,7 @@ def main():
   • {d['lti_level']} ({d['lti_score']})
   • FR极值分: {d['lti_raw_fr']:.1f} | 持仓24H变幅: {d['lti_raw_imb']:+.2f}%
 ====================================
+📊 **数据健康度**: {health_text}
 ⏱️ 生成时间: {bj_time} (北京时间)
 """
     
