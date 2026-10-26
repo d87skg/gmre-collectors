@@ -32,15 +32,9 @@ jobs:
         run: |
           mkdir -p data
           
-          cat << 'EOF' > cloud_setup.py
+          # 1. 初始化空数据库（只建必要的表，不灌入数据）
+          cat << 'EOF' > cloud_init.py
           import sqlite3
-          import pandas as pd
-          import os
-          import requests
-          import io
-          from datetime import datetime
-
-          # 1. 建表（包含全量需要的表）
           con = sqlite3.connect('data/macro.db')
           con.execute('CREATE TABLE IF NOT EXISTS observations (series_id TEXT, timestamp TEXT, value REAL, source TEXT, retrieved_at TEXT)')
           con.execute('CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)')
@@ -50,55 +44,46 @@ jobs:
           con.execute('CREATE TABLE IF NOT EXISTS san_metrics (datetime TEXT, metric TEXT, slug TEXT, value REAL)')
           con.commit()
           con.close()
-
-          # 2. 加载宏观历史锚点
+          print("✅ 云端空数据库初始化完成")
+          EOF
+          python cloud_init.py
+          
+          # 2. 加载历史锚点（宏观 + 商品）
+          cat << 'EOF' > load_anchors.py
+          import sqlite3
+          import pandas as pd
+          import os
+          
+          con = sqlite3.connect('data/macro.db')
+          
           if os.path.exists('data/history_anchor.csv'):
               df = pd.read_csv('data/history_anchor.csv')
-              conn = sqlite3.connect('data/macro.db')
-              df.to_sql('observations', conn, if_exists='append', index=False)
-              conn.close()
+              df.to_sql('observations', con, if_exists='append', index=False)
               print(f'✅ 宏观锚点已加载 ({len(df)} 条)')
               
-          # 3. 加载商品历史锚点（彻底解决 CAPS 为 N/A 的问题）
           if os.path.exists('data/commodity_anchor.csv'):
               df_comm = pd.read_csv('data/commodity_anchor.csv')
-              conn = sqlite3.connect('data/macro.db')
-              df_comm.to_sql('commodity_caps', conn, if_exists='append', index=False)
-              conn.close()
+              df_comm.to_sql('commodity_caps', con, if_exists='append', index=False)
               print(f'✅ 商品锚点已加载 ({len(df_comm)} 条)')
           else:
               print('❌ 未找到 commodity_anchor.csv，CAPS 将降级为空')
-
-          # 4. 白嫖高频账号的最新快照
-          urls = [
-              "https://raw.githubusercontent.com/jmhbldj/gmre-collectors/data-highfreq/data/feishu_snapshot.csv",
-              "https://raw.githubusercontent.com/d87skg/gmre-collectors/main/data/feishu_snapshot.csv"
-          ]
-          for url in urls:
-              try:
-                  r = requests.get(f"{url}?t={datetime.now().timestamp()}", timeout=10)
-                  if r.status_code == 200 and r.text.strip():
-                      df_tmp = pd.read_csv(io.StringIO(r.text))
-                      conn = sqlite3.connect('data/macro.db')
-                      df_tmp.to_sql('feishu_snapshot', conn, if_exists='replace', index=False)
-                      conn.close()
-                      print(f'✅ 成功拉取线上数据: {url.split("/")[-3]}')
-                      break
-              except Exception as e:
-                  print(f'⚠️ 拉取失败 ({url}): {str(e)[:30]}')
+          con.close()
           EOF
+          python load_anchors.py
           
-          python cloud_setup.py
+          # 3. 核心修复：直接调用本地同步脚本，拉取飞书快照并执行“费率缝合”
+          # 这个脚本会自动去拉取 main/highfreq 四个分支，并执行你昨天写的缝合逻辑
+          python tools/sync_feishu_snapshot.py
           
-          # 5. 跑外盘商品同步、覆写、分位
-          python tools/sync_commodity_github.py || echo "Commodity failed"
+          # 4. 执行覆写和分位计算
           python tools/apply_feishu_override.py || echo "Override failed"
           python tools/compute_percentile.py || echo "Percentile failed"
           
-          # 6. 核心修复：计算 CAPS 和 LTI 并把结果落表
+          # 5. 跑外盘商品同步、CAPS 和 LTI 引擎
+          python tools/sync_commodity_github.py || echo "Commodity failed"
           python engines_v3/caps_engine.py || echo "CAPS failed"
           python engines_v3/lti_engine.py || echo "LTI failed"
           
-          # 7. 运行主引擎并推飞书
+          # 6. 运行主引擎并推飞书
           python engines_v3/run_v4.py || echo "Engine failed"
           python tools/send_local_feishu.py || echo "Feishu failed"
