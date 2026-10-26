@@ -179,7 +179,7 @@ def main():
 {micro_text}
 
 📦 **商品逼仓 (CAPS)**:
-  • 沪铜: {icon_cu} {d['caps_cu']}
+  • 沪铜: {icon_cu} {d['caps_cu']} (内外盘价差: {d.get('cu_spread', 0):+.2f}%)
   • 沪铝: {icon_al} {d['caps_al']}
 
 💧 **清算透明度 (LTI)**:

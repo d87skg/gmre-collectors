@@ -1,4 +1,4 @@
-"""engines_v3/run_v4.py - GMRE 3.3 完整集成版（全功能终极版：中美日德利差）"""
+"""engines_v3/run_v4.py - GMRE 3.3 完整集成版（全功能终极版：中美日德利差 + 内外盘价差）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -161,7 +161,7 @@ def main():
             input_snapshot[sid] = None
     print(f"{'─'*50}")
 
-    # ============ 新增：全球利差监控 ============
+    # ============ 全球利差监控 ============
     try:
         cn10y = get_series_meta('CN_10Y_YIELD')[1]
         jp10y = get_series_meta('JP_10Y')[1]
@@ -259,6 +259,15 @@ def main():
         print(f"{shock['primary_shock']} (I={shock['primary_intensity']:.2f})")
     except Exception as e:
         print(f"❌ {str(e)[:50]}")
+
+    # ============ 核心新增：内外盘价差监控 ============
+    cu_spread = get_series_meta('CU_SPREAD_PCT')[1]
+    if cu_spread:
+        if abs(cu_spread) > 2.0:
+            print(f"  [CU Spread]  🚨 内外盘极值价差: {cu_spread:+.2f}% (逼仓风险)")
+        else:
+            print(f"  [CU Spread]  🟢 内外盘价差: {cu_spread:+.2f}% (正常)")
+    # ====================================================
 
     # CAPS Commodity
     print(f"  [CAPS Commodity] ", end='', flush=True)
