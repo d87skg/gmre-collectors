@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - 全息推演版（含仓位建议与数据健康度）"""
+"""tools/send_local_feishu.py - 全息推演版（终极完美版：内外盘价差 + 智能兜底）"""
 import os
 import requests
 import json
@@ -11,7 +11,7 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
-# 引入刚才写的仓位引擎
+# 引入仓位引擎
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engines_v3.portfolio_optimizer import get_portfolio_advice, get_data_health
@@ -30,7 +30,7 @@ def get_latest_data():
     data = {
         'asof': asof, 'frag_score': 0.0, 'frag_level': 'N/A',
         'risk_gate': 'UNKNOWN', 'stress_layers': 'NONE',
-        'caps_al': 'N/A', 'caps_cu': 'N/A', 
+        'caps_al': 'N/A', 'caps_cu': 'N/A', 'cu_spread': 0.0,
         'lti_score': 0.0, 'lti_level': 'UNKNOWN',
         'y10': 0.0, 'rrp': 0.0, 'hy_oas': 0.0, 'vix': 0.0,
         'bitget_fr': 0.0, 'coinbase_prem': 0.0, 'hl_imb': 0.0,
@@ -92,18 +92,24 @@ def get_latest_data():
             data['fear_greed'] = int(float(f_data.get('fear_greed', 0) or 0))
             data['silver'] = float(f_data.get('silver', 0) or 0)
             data['copper'] = float(f_data.get('copper', 0) or 0)
-            data['spx'] = float(f_data.get('ndx', 0) or 0)
             
             data['gold'] = get_val('GOLD_PRICE') or float(f_data.get('gold', 0) or 0)
             data['oil'] = get_val('WTI_OIL') or float(f_data.get('oil', 0) or 0)
             data['dxy'] = get_val('DXY_PROXY') or float(f_data.get('dxy', 0) or 0)
             data['usdjpy'] = get_val('USD_JPY') or float(f_data.get('usdjpy', 0) or 0)
             
+            # 核心修复：优先取 NDX，没有就取 SP500（标普500）
+            data['spx'] = get_val('NDX') or get_val('SP500') or float(f_data.get('ndx', 0) or 0)
+            data['cu_spread'] = get_val('CU_SPREAD_PCT')
+            
             raw_cny = float(f_data.get('usdcny_mid', 0) or 0)
             if raw_cny == 0:
                 r_cny = conn.execute("SELECT value FROM observations WHERE series_id='USDCNY_MID' AND value > 0 ORDER BY timestamp DESC LIMIT 1").fetchone()
                 raw_cny = r_cny[0] if r_cny else 0.0
             data['usdcny'] = raw_cny / 100.0 if raw_cny > 10 else raw_cny
+        else:
+            data['spx'] = get_val('NDX') or get_val('SP500')
+            data['cu_spread'] = get_val('CU_SPREAD_PCT')
 
     except Exception as e: print(f"⚠️ 读取数据库失败: {e}")
     finally:
@@ -114,7 +120,6 @@ def main():
     if not WEBHOOK or not SECRET: return
     d = get_latest_data()
     
-    # ============ P0级升级：获取仓位建议与数据健康度 ============
     try:
         weights, cash_pct = get_portfolio_advice(d['risk_gate'], d['frag_score'])
         health_text = get_data_health()
@@ -123,15 +128,15 @@ def main():
         cash_pct = 100
         health_text = f"❌ 仓位引擎异常: {e}"
 
-    # 生成行动指南
-    action_guide = ""
-    if d['risk_gate'] == 'RED':
+    # 构造行动指南
+    if d['caps_cu'] != 'N/A' and d['caps_cu'] >= 80:
+        action_guide = "🚨 极度危险：沪铜发生史诗级逼仓，宏观流动性枯竭，现金为王，切勿进场！"
+    elif d['risk_gate'] == 'RED':
         action_guide = "⚠️ 行动指南：现金为王，久期与杠杆降至最低，切勿追高接飞刀。"
     elif d['risk_gate'] == 'ORANGE':
         action_guide = "⚖️ 行动指南：保持防守，控制仓位，等待右侧信号。"
     else:
         action_guide = "🟢 行动指南：可适度提升风险敞口，顺势而为。"
-    # =========================================================
 
     micro_alerts = []
     if d['bitget_fr'] > 50: micro_alerts.append(f"🚨 资金费率极度拥挤: {d['bitget_fr']:+.2f}% 年化")
@@ -146,6 +151,7 @@ def main():
     icon_cu = "⚪" if d['caps_cu'] == 'N/A' else ("🚨" if isinstance(d['caps_cu'], float) and d['caps_cu'] >= 60 else "🟡")
     icon_al = "⚪" if d['caps_al'] == 'N/A' else ("🚨" if isinstance(d['caps_al'], float) and d['caps_al'] >= 60 else "🟡")
     cny_display = f"{d['usdcny']:.4f}" if d['usdcny'] > 0 else "N/A"
+    spx_display = f"{d['spx']:.1f}" if d['spx'] > 0 else "N/A"
     bj_time = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
 
     text = f"""📊 **GMRE 3.3 全息风控晨报** - {d['asof']}
@@ -164,7 +170,7 @@ def main():
 🌍 **大类资产与汇率矩阵**:
   • 黄金: ${d['gold']:.2f} | 白银: ${d['silver']:.2f}
   • 原油 (WTI): ${d['oil']:.2f} | 铜: ${d['copper']:.2f}
-  • 美股 (纳指): {d['spx']:.1f}
+  • 美股 (标普/纳指): {spx_display}
   • 美元指数: {d['dxy']:.2f} | 美元/日元: {d['usdjpy']:.2f} | 美元/人民币: {cny_display}
 
 🌐 **全球宏观与利差监控**:
@@ -179,7 +185,7 @@ def main():
 {micro_text}
 
 📦 **商品逼仓 (CAPS)**:
-  • 沪铜: {icon_cu} {d['caps_cu']} (内外盘价差: {d.get('cu_spread', 0):+.2f}%)
+  • 沪铜: {icon_cu} {d['caps_cu']} (内外盘价差: {d['cu_spread']:+.2f}%)
   • 沪铝: {icon_al} {d['caps_al']}
 
 💧 **清算透明度 (LTI)**:
