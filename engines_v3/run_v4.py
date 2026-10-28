@@ -28,7 +28,6 @@ from engines_v3 import (
 try:
     from tools.check_events import check_upcoming_events
 except ImportError:
-    # 👈 核心修复：改成 **kwargs，防止传入 config_path 时崩溃
     check_upcoming_events = lambda **kwargs: []
 
 DB_PATH = 'data/macro.db'
@@ -214,13 +213,20 @@ def main():
         print(" | ".join(output_parts))
     except Exception as e: print(f"❌ {str(e)[:50]}")
 
+    # ============ LTI Clearing (加入兜底) ============
     print(f"  [LTI Clearing]  ", end='', flush=True)
     try:
         from engines_v3 import lti_engine
         with contextlib.redirect_stdout(io.StringIO()):
             lti = lti_engine.compute_lti(asof)
-        icon = "🚨" if lti['level'] in ("EXTREME", "HIGH") else "🟡" if lti['level'] == "MEDIUM" else "🟢"
-        print(f"{icon} {lti['lti_score']}/100 ({lti['level']}) | FR差异 {lti['raw']['fr_cross_diff']}% | 持仓24H变幅 {lti['raw']['hl_imbalance']:+.2f}%")
+        icon = "🚨" if lti.get('level') in ("EXTREME", "HIGH") else "🟡" if lti.get('level') == "MEDIUM" else "🟢"
+        
+        # 核心修复：安全提取 raw 字典，防止空数据把主引擎带崩
+        raw_data = lti.get('raw', {})
+        fr_diff = raw_data.get('fr_cross_diff', 0.0)
+        hl_imb = raw_data.get('hl_imbalance', 0.0)
+        
+        print(f"{icon} {lti.get('lti_score', 0)}/100 ({lti.get('level', 'UNKNOWN')}) | FR差异 {fr_diff}% | 持仓24H变幅 {hl_imb:+.2f}%")
     except Exception as e: print(f"❌ {str(e)[:50]}")
 
     # ============ 尾轨：风控 ============
