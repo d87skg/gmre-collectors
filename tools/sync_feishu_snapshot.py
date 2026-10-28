@@ -34,9 +34,16 @@ def fetch_csv():
 
 def main():
     try:
+        # 👈 核心修复：无论有没有数据，先把表建出来，防止下游崩溃
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS feishu_snapshot (timestamp TEXT PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
         rows = fetch_csv()
         if not rows:
-            print("❌ 没有拉取到快照数据。")
+            print("❌ 没有拉取到快照数据，仅保留空表。")
             return
 
         conn = sqlite3.connect(DB_PATH)
@@ -45,7 +52,6 @@ def main():
         latest_in_db = cursor.fetchone()[0]
 
         inserted_count = 0
-        # 如果库是空的，或者新数据比库里的新
         if not latest_in_db or rows[-1]['timestamp'] > latest_in_db:
             safe_fields = [c for c in rows[0].keys() if c and isinstance(c, str)]
             col_defs = ', '.join([f"{c} TEXT" for c in safe_fields])

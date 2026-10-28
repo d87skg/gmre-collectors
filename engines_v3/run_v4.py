@@ -28,7 +28,8 @@ from engines_v3 import (
 try:
     from tools.check_events import check_upcoming_events
 except ImportError:
-    check_upcoming_events = lambda x: []
+    # 👈 核心修复：改成 **kwargs，防止传入 config_path 时崩溃
+    check_upcoming_events = lambda **kwargs: []
 
 DB_PATH = 'data/macro.db'
 

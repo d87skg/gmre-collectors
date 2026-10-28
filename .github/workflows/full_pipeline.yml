@@ -2,7 +2,6 @@ name: Full Cloud Engine (Backup)
 
 on:
   schedule:
-    # 每天 UTC 0/8/16 点（结算后 15 分）执行，避开并发高峰
     - cron: '15 0,8,16 * * *'
   workflow_dispatch:
 
@@ -22,7 +21,8 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install pandas numpy requests python-dotenv yfinance scikit-learn scipy statsmodels
+        # 👈 核心修复：加入了 pyyaml 用于解析事件日历
+        run: pip install pandas numpy requests python-dotenv yfinance scikit-learn scipy statsmodels pyyaml
 
       - name: Build Cloud DB and Run Pipeline
         env:
@@ -32,7 +32,6 @@ jobs:
         run: |
           mkdir -p data
           
-          # 1. 初始化空数据库（只建必要的表，不灌入数据）
           cat << 'EOF' > cloud_init.py
           import sqlite3
           con = sqlite3.connect('data/macro.db')
@@ -42,13 +41,14 @@ jobs:
           con.execute('CREATE TABLE IF NOT EXISTS lti_engine (asof_date TEXT PRIMARY KEY, lti_score REAL, level TEXT)')
           con.execute('CREATE TABLE IF NOT EXISTS commodity_caps (date TEXT, symbol TEXT, open_interest REAL, warehouse_stock REAL, close_price REAL, PRIMARY KEY (date, symbol))')
           con.execute('CREATE TABLE IF NOT EXISTS san_metrics (datetime TEXT, metric TEXT, slug TEXT, value REAL)')
+          # 👈 核心修复：强制建快照表，防止下游崩溃
+          con.execute('CREATE TABLE IF NOT EXISTS feishu_snapshot (timestamp TEXT PRIMARY KEY)')
           con.commit()
           con.close()
           print("✅ 云端空数据库初始化完成")
           EOF
           python cloud_init.py
           
-          # 2. 加载历史锚点（宏观 + 商品）
           cat << 'EOF' > load_anchors.py
           import sqlite3
           import pandas as pd
@@ -71,19 +71,12 @@ jobs:
           EOF
           python load_anchors.py
           
-          # 3. 核心修复：直接调用本地同步脚本，拉取飞书快照并执行“费率缝合”
-          # 这个脚本会自动去拉取 main/highfreq 四个分支，并执行你昨天写的缝合逻辑
-          python tools/sync_feishu_snapshot.py
-          
-          # 4. 执行覆写和分位计算
+          python tools/sync_feishu_snapshot.py || echo "Sync failed"
           python tools/apply_feishu_override.py || echo "Override failed"
           python tools/compute_percentile.py || echo "Percentile failed"
-          
-          # 5. 跑外盘商品同步、CAPS 和 LTI 引擎
           python tools/sync_commodity_github.py || echo "Commodity failed"
+          python engines_v3/spread_engine.py || echo "Spread failed"
           python engines_v3/caps_engine.py || echo "CAPS failed"
           python engines_v3/lti_engine.py || echo "LTI failed"
-          
-          # 6. 运行主引擎并推飞书
           python engines_v3/run_v4.py || echo "Engine failed"
           python tools/send_local_feishu.py || echo "Feishu failed"
