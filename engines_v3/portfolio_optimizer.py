@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# engines_v3/portfolio_optimizer.py
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -24,16 +23,13 @@ def get_data_health():
     except Exception:
         return "❌ 健康度读取失败"
 
-def get_portfolio_advice(risk_gate, frag_score):
+def get_portfolio_advice(risk_gate, frag_score, caps_cu=0):
     conn = sqlite3.connect(DB_PATH)
     assets = {'BTC': 'BTC_SPOT_PRICE_1H', 'GOLD': 'GOLD_PRICE', 'US10Y': 'YC10Y'}
     vols = {}
     for name, sid in assets.items():
         df = pd.read_sql_query(f"SELECT value FROM observations WHERE series_id='{sid}' ORDER BY timestamp DESC LIMIT 20", conn)
         vols[name] = df['value'].pct_change().dropna().std() if len(df) > 5 else 0.02
-            
-    lti_row = conn.execute("SELECT lti_score FROM lti_engine ORDER BY asof_date DESC LIMIT 1").fetchone()
-    current_lti = lti_row[0] if lti_row else 0
     conn.close()
 
     if risk_gate == 'RED':
@@ -42,6 +38,11 @@ def get_portfolio_advice(risk_gate, frag_score):
         target_vol, base_cash = 0.08, 0.30
     else:
         target_vol, base_cash = 0.15, 0.10
+
+    # 如果沪铜极值逼仓，强行将现金比例拉高到 50% 以上
+    if caps_cu >= 80:
+        base_cash = max(base_cash, 0.50)
+        target_vol *= 0.5
 
     if frag_score > 60:
         base_cash += 0.10
@@ -57,8 +58,8 @@ def get_portfolio_advice(risk_gate, frag_score):
         scale = (total_risk_assets_weight * 100) / current_total
         weights = {k: round(v * scale, 1) for k, v in weights.items()}
 
-    # ============ 核心加入：15% 硬性截断 ============
-    if risk_gate == 'RED':
+    # 核心硬性风控：Gate 为 RED 或 沪铜逼仓时，单一资产不超过 15%
+    if risk_gate == 'RED' or caps_cu >= 80:
         excess_sum = 0.0
         for asset, w in weights.items():
             if w > 15.0:
