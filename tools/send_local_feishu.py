@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - 全息推演版（终极完美版：内外盘价差 + 智能兜底）"""
+"""tools/send_local_feishu.py - 全息推演版（逻辑严格一致版）"""
 import os
 import requests
 import json
@@ -10,8 +10,6 @@ import time
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-
-# 引入仓位引擎
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engines_v3.portfolio_optimizer import get_portfolio_advice, get_data_health
@@ -44,7 +42,6 @@ def get_latest_data():
     
     try:
         conn = sqlite3.connect(DB_PATH)
-        
         row = conn.execute("SELECT risk_gate, stress_state, frag_level FROM daily_summary WHERE asof_date=?", (asof,)).fetchone()
         if row:
             data['risk_gate'], data['stress_layers'], data['frag_level'] = row[0], row[1], row[2]
@@ -97,8 +94,6 @@ def get_latest_data():
             data['oil'] = get_val('WTI_OIL') or float(f_data.get('oil', 0) or 0)
             data['dxy'] = get_val('DXY_PROXY') or float(f_data.get('dxy', 0) or 0)
             data['usdjpy'] = get_val('USD_JPY') or float(f_data.get('usdjpy', 0) or 0)
-            
-            # 核心修复：优先取 NDX，没有就取 SP500（标普500）
             data['spx'] = get_val('NDX') or get_val('SP500') or float(f_data.get('ndx', 0) or 0)
             data['cu_spread'] = get_val('CU_SPREAD_PCT')
             
@@ -121,7 +116,9 @@ def main():
     d = get_latest_data()
     
     try:
-        weights, cash_pct = get_portfolio_advice(d['risk_gate'], d['frag_score'])
+        # 核心修改：把 caps_cu 传给仓位计算引擎
+        caps_cu_val = d['caps_cu'] if isinstance(d['caps_cu'], float) else 0
+        weights, cash_pct = get_portfolio_advice(d['risk_gate'], d['frag_score'], caps_cu=caps_cu_val)
         health_text = get_data_health()
     except Exception as e:
         weights = {'BTC': 0, 'GOLD': 0, 'US10Y': 0}
@@ -145,7 +142,6 @@ def main():
     elif d['hl_imb'] < -3.0: micro_alerts.append(f"📊 持仓量剧减 (踩踏平仓): 24H变幅 {d['hl_imb']:+.2f}%")
     if d['btc_etf_flow'] > 500: micro_alerts.append(f"💰 BTC ETF 大额流入: ${d['btc_etf_flow']:.1f}M")
     elif d['btc_etf_flow'] < -500: micro_alerts.append(f"💰 BTC ETF 大额流出: ${d['btc_etf_flow']:.1f}M")
-
     micro_text = "\n".join(micro_alerts) if micro_alerts else "  · 微观结构暂无极端异动"
 
     icon_cu = "⚪" if d['caps_cu'] == 'N/A' else ("🚨" if isinstance(d['caps_cu'], float) and d['caps_cu'] >= 60 else "🟡")
