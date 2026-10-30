@@ -1,4 +1,4 @@
-"""engines_v3/stress_overlay_v2.py - S0-S8 压力层（审计修正版）"""
+"""engines_v3/stress_overlay_v2.py - S0-S8 压力层（审计修正版 + S7数据完备性校验）"""
 import sys as _sys
 from pathlib import Path as _Path
 _PROJECT_ROOT = _Path(__file__).resolve().parents[1]
@@ -170,22 +170,41 @@ def evaluate_stress(asof: str) -> dict:
         'description': f'信用压力 ({sum(1 for c in s6_conditions if c[1])}/{len(s6_conditions)}项)'
     })
 
-    # ============ S7 CONTAGION（新增）============
+    # ============ S7 CONTAGION（新增 · 带数据完备性检查）============
     s7_conditions = []
     if len(spx) >= 30 and len(y10) >= 30:
         spx_ret = spx.pct_change().dropna()
         y10_chg = y10.diff().dropna()
         df = pd.concat([spx_ret.rename('s'), y10_chg.rename('y')], axis=1, sort=True).dropna()
+        
         if len(df) >= 5:
-            corr_5d = float(df.tail(5).corr().iloc[0, 1])
-            s7_conditions.append(('股债5D相关性>0.5', corr_5d > 0.5, f'{corr_5d:.2f}'))
+            recent_5 = df.tail(5)
+            # 🆕 数据完备性检查：最近5个点的日期跨度不能超过 7 个自然日
+            try:
+                date_span = (pd.to_datetime(recent_5.index[-1]) - pd.to_datetime(recent_5.index[0])).days
+            except Exception:
+                date_span = 999
+            
+            if date_span <= 7:
+                corr_5d = float(recent_5.corr().iloc[0, 1])
+                s7_conditions.append(('股债5D相关性>0.5', corr_5d > 0.5, f'{corr_5d:.2f}'))
+            else:
+                # 数据跨度过大，说明最近有数据缺口，抑制触发避免假信号
+                corr_5d = float(recent_5.corr().iloc[0, 1])
+                s7_conditions.append((
+                    '股债5D相关性>0.5',
+                    False,  # 保守起见，数据不全不触发
+                    f'{corr_5d:.2f} (跨度{date_span}天，数据不全，抑制触发)'
+                ))
+        else:
+            s7_conditions.append(('股债5D相关性>0.5', False, f'数据仅{len(df)}条，不足5条'))
 
     s7_triggered = all(c[1] for c in s7_conditions) if s7_conditions else False
     layers.append({
         'layer': 'S7', 'name': 'CONTAGION',
         'triggered': s7_triggered,
         'conditions': [{'name': c[0], 'met': c[1], 'value': c[2]} for c in s7_conditions],
-        'description': '传染：跨资产相关性坍塌'
+        'description': '传染：跨资产相关性坍塌（带数据完备性校验）'
     })
 
     # ============ S8 SYSTEMIC_CRISIS（需S5+S6+S7同时共振）============

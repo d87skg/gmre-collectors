@@ -1,9 +1,10 @@
-"""engines_v3/defense_v4.py - 防线0-7（审计对齐版）"""
+"""engines_v3/defense_v4.py - 防线0-7（Fail-Closed 安全增强版）"""
 import sys as _sys
 from pathlib import Path as _Path
 _PROJECT_ROOT = _Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_PROJECT_ROOT))
+
 from tools.rrp_guard import run_rrp_guard, DownstreamAction, RRPStatus
 import sqlite3
 import pandas as pd
@@ -89,40 +90,67 @@ def evaluate_v4(asof: str) -> dict:
         'action': '降久期，减仓长债+成长股'
     })
 
-    # ============ 防线3：LIQUIDITY_BUFFER_DEPLETION (由 rrp_guard 门控) ============
+    # ============ 防线3：LIQUIDITY_BUFFER_DEPLETION (Fail-Closed 强制熔断版) ============
     d3_conds = []
     try:
         _g3 = run_rrp_guard(verbose=False)
-        if _g3.downstream_action == DownstreamAction.PROCEED and _g3.primary_value is not None:
+        
+        if _g3.downstream_action in (DownstreamAction.BLOCK, DownstreamAction.OBSERVE):
+            d3_conds.append(('RRP_DATA_CRITICAL', True, f"数据源异常: {_g3.status.value}"))
+            d3 = True
+            print(f"🚨 [FAIL-CLOSED] 防线3强制触发：RRP 数据不可靠 ({_g3.status.value})")
+            
+        elif _g3.primary_value is not None:
             _rrp_used = float(_g3.primary_value)
             _rrp_src = _g3.primary_source
             d3_conds.append((f'RRP<50B ({_rrp_src})', _rrp_used < 50, f'{_rrp_used:.2f}B'))
             d3 = sum(1 for c in d3_conds if c[1]) >= 1
-        elif _g3.downstream_action == DownstreamAction.OBSERVE:
-            d3_conds.append(('RRP_OBSERVE', False, _g3.status.value))
-            d3 = False
-        else:  # BLOCK
-            d3_conds.append(('RRP_DATA_UNAVAILABLE', False, _g3.status.value))
-            d3 = False
+            
+        else:
+            d3_conds.append(('RRP_NONE', True, "无主源数据"))
+            d3 = True
+            
     except Exception as _e:
-        d3_conds.append(('RRP_GUARD_ERROR', False, str(_e)))
-        d3 = False
+        d3_conds.append(('RRP_GUARD_ERROR', True, str(_e)[:50]))
+        d3 = True
+        print(f"🚨 [FAIL-CLOSED] 防线3强制触发：RRP Guard 调用崩溃 ({_e})")
+
     lines.append({
         'line': '防线3', 'name': 'LIQUIDITY_BUFFER',
         'triggered': d3, 'conditions': d3_conds,
-        'action': '流动性缓冲耗尽，保留现金'
+        'action': '流动性缓冲耗尽或数据盲区，强制提升现金至40%+'
     })
 
-    # ============ 防线4：FUNDING_STRESS ============
+    # ============ 防线4：FUNDING_STRESS (Fail-Closed 强制熔断版) ============
     d4_conds = []
-    if len(sofr) >= 1 and len(effr) >= 1:
-        spread = (float(sofr.ffill().iloc[-1]) - float(effr.ffill().iloc[-1])) * 100
-        d4_conds.append(('SOFR-EFFR>+3bp', spread > 3, f'{spread:.2f}bp'))
-    d4 = sum(1 for c in d4_conds if c[1]) >= 1
+    d4 = False  # 👈 核心修复：必须在这里初始化 d4
+    sofr_valid = len(sofr) >= 1
+    effr_valid = len(effr) >= 1
+    
+    if not sofr_valid or not effr_valid:
+        d4_conds.append(('SOFR/EFFR_DATA_MISSING', True, '数据缺失'))
+        d4 = True
+        print("🚨 [FAIL-CLOSED] 防线4强制触发：SOFR/EFFR 数据缺失")
+    else:
+        try:
+            latest_date = pd.to_datetime(sofr.index[-1]).tz_localize(None)
+            days_lag = (datetime.now() - latest_date).days
+            if days_lag > 3:
+                d4_conds.append(('SOFR_DATA_STALE', True, f'滞后 {days_lag} 天'))
+                d4 = True
+                print(f"🚨 [FAIL-CLOSED] 防线4强制触发：SOFR 数据过期 (滞后 {days_lag} 天)")
+        except Exception:
+            pass
+            
+        if not d4:
+            spread = (float(sofr.ffill().iloc[-1]) - float(effr.ffill().iloc[-1])) * 100
+            d4_conds.append(('SOFR-EFFR>+3bp', spread > 3, f'{spread:.2f}bp'))
+            d4 = sum(1 for c in d4_conds if c[1]) >= 1
+
     lines.append({
         'line': '防线4', 'name': 'FUNDING_STRESS',
         'triggered': d4, 'conditions': d4_conds,
-        'action': '融资压力确认，全面防御'
+        'action': '融资压力确认或数据盲区，全面防御降杠杆'
     })
 
     # ============ 防线5：CREDIT_STRESS ============

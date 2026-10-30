@@ -13,7 +13,12 @@ from datetime import datetime
 
 DB_PATH = 'data/macro.db'
 
+
 def _load(conn, sids, limit=500):
+    """加载多个series，返回按日期对齐的DataFrame
+
+    v2 修复: 每个 series 单独 LIMIT, 避免单一 series 占满全局 LIMIT
+    """
     frames = []
     for date_col in ['timestamp', 'date']:
         frames = []
@@ -45,6 +50,7 @@ def _load(conn, sids, limit=500):
 
 
 def run_audit(asof: str = None) -> dict:
+    """执行7项数据质量自检"""
     if asof is None:
         asof = datetime.now().strftime('%Y-%m-%d')
 
@@ -56,16 +62,8 @@ def run_audit(asof: str = None) -> dict:
     finally:
         conn.close()
 
-    # 核心修复：加上完整的默认字段，防止下游 KeyError 崩溃
     if df.empty or len(df) < 30:
-        return {
-            'status': 'FAIL', 
-            'error': 'insufficient_data', 
-            'checks': [],
-            'pass_count': 0,
-            'warn_count': 0,
-            'critical_count': 0
-        }
+        return {'status': 'FAIL', 'error': 'insufficient_data', 'checks': []}
 
     checks = []
     warnings = []
@@ -116,7 +114,7 @@ def run_audit(asof: str = None) -> dict:
         else:
             criticals.append('WALCL 低于 6万亿，QT可能过度')
 
-    # ============ 检查4：RRP 双源对齐 ============
+    # ============ 检查4：RRP 双源对齐 (由 rrp_guard 统一判定) ============
     try:
         _g = run_rrp_guard(verbose=False)
         if _g.status in (RRPStatus.OK, RRPStatus.TIME_LAG):
@@ -125,16 +123,32 @@ def run_audit(asof: str = None) -> dict:
                 f"NYFed={_g.nyfed_value:.2f}@{_g.nyfed_date}, "
                 f"lag={_g.lag_days}d, 同日期偏差={_g.same_day_max_divergence_pct:.2f}%"
             )
-            checks.append({'name': 'RRP 双源对齐', 'status': 'PASS', 'detail': _detail})
+            checks.append({
+                'name': 'RRP 双源对齐',
+                'status': 'PASS',
+                'detail': _detail
+            })
         elif _g.status == RRPStatus.DIVERGENCE:
             warnings.append(f'RRP 同日源分歧 {_g.same_day_max_divergence_pct:.1f}%')
-            checks.append({'name': 'RRP 双源对齐', 'status': 'WARN', 'detail': _g.message})
-        else:
+            checks.append({
+                'name': 'RRP 双源对齐',
+                'status': 'WARN',
+                'detail': _g.message
+            })
+        else:  # STALE / MISSING
             criticals.append(f'RRP 数据不可用: {_g.status.value}')
-            checks.append({'name': 'RRP 双源对齐', 'status': 'FAIL', 'detail': _g.message})
+            checks.append({
+                'name': 'RRP 双源对齐',
+                'status': 'FAIL',
+                'detail': _g.message
+            })
     except Exception as _e:
         warnings.append(f'RRP guard 调用异常: {_e}')
-        checks.append({'name': 'RRP 双源对齐', 'status': 'WARN', 'detail': f'guard error: {_e}'})
+        checks.append({
+            'name': 'RRP 双源对齐',
+            'status': 'WARN',
+            'detail': f'guard error: {_e}'
+        })
 
     # ============ 检查5：TGA 日频 vs 周频 对比 ============
     if 'TGA_BALANCE' in df.columns and 'TGA_DAILY' in df.columns:
@@ -153,7 +167,7 @@ def run_audit(asof: str = None) -> dict:
                 checks.append({'name': 'TGA 周频vs日频', 'status': 'WARN',
                                'detail': f'周频={tga_w:.1f}B, 日频={tga_d:.1f}B'})
 
-    # ============ 检查6：CARRY 勾稽 ============
+    # ============ 检查6：CARRY 勾稽（统一时间窗口） ============
     if 'USD_JPY' in df.columns and 'VIX' in df.columns:
         usdjpy_clean = df['USD_JPY'].dropna().tail(60)
         vix_clean = df['VIX'].dropna().tail(60)
@@ -164,16 +178,18 @@ def run_audit(asof: str = None) -> dict:
 
             if usdjpy_20d < -0.015 and vix_20d > 0.10:
                 checks.append({
-                    'name': 'CARRY 勾稽', 'status': 'PASS',
+                    'name': 'CARRY 勾稽',
+                    'status': 'PASS',
                     'detail': f'🚨 CARRY_WARNING成立: USDJPY 20d={usdjpy_20d*100:.2f}%, VIX 20d={vix_20d*100:.2f}%, 汇率={current_usdjpy:.2f}'
                 })
             else:
                 checks.append({
-                    'name': 'CARRY 勾稽', 'status': 'PASS',
+                    'name': 'CARRY 勾稽',
+                    'status': 'PASS',
                     'detail': f'USDJPY 20d={usdjpy_20d*100:.2f}%, VIX 20d={vix_20d*100:.2f}%'
                 })
 
-    # ============ 检查7：美日利差验证 ============
+    # ============ 检查7：美日利差验证（统一窗口） ============
     if 'YC10Y' in df.columns and 'JP_10Y_YIELD' in df.columns:
         us10y_clean = df['YC10Y'].dropna().tail(30)
         jp10y_clean = df['JP_10Y_YIELD'].dropna().tail(30)
@@ -183,7 +199,8 @@ def run_audit(asof: str = None) -> dict:
             spread_bp = (us10y - jp10y) * 100
             if 100 < spread_bp < 500:
                 checks.append({
-                    'name': '美日利差', 'status': 'PASS',
+                    'name': '美日利差',
+                    'status': 'PASS',
                     'detail': f'US10Y={us10y:.2f}%, JP10Y={jp10y:.2f}%, 利差={spread_bp:.0f}bp'
                 })
             else:
@@ -191,12 +208,17 @@ def run_audit(asof: str = None) -> dict:
 
     # ============ 汇总 ============
     status = 'PASS'
-    if warnings: status = 'WARN'
-    if criticals: status = 'FAIL'
+    if warnings:
+        status = 'WARN'
+    if criticals:
+        status = 'FAIL'
 
     result = {
-        'asof': asof, 'status': status, 'checks': checks,
-        'warnings': warnings, 'criticals': criticals,
+        'asof': asof,
+        'status': status,
+        'checks': checks,
+        'warnings': warnings,
+        'criticals': criticals,
         'pass_count': len([c for c in checks if c['status'] == 'PASS']),
         'warn_count': len(warnings),
         'critical_count': len(criticals)
@@ -206,15 +228,40 @@ def run_audit(asof: str = None) -> dict:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS data_quality_audit (
-            asof_date TEXT PRIMARY KEY, status TEXT, pass_count INTEGER, warn_count INTEGER, critical_count INTEGER, detail TEXT
+            asof_date TEXT PRIMARY KEY,
+            status TEXT, pass_count INTEGER, warn_count INTEGER, critical_count INTEGER,
+            detail TEXT
         )
     """)
     conn.execute("""
         INSERT OR REPLACE INTO data_quality_audit
         (asof_date, status, pass_count, warn_count, critical_count, detail)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (asof, status, result['pass_count'], result['warn_count'], result['critical_count'], json.dumps(checks)))
+    """, (asof, status, result['pass_count'], result['warn_count'],
+          result['critical_count'], json.dumps(checks)))
     conn.commit()
     conn.close()
 
     return result
+
+
+if __name__ == "__main__":
+    asof = datetime.now().strftime('%Y-%m-%d')
+    result = run_audit(asof)
+    print(f"\n{'='*60}")
+    print(f"  数据真实性自检 - {asof}")
+    print(f"{'='*60}")
+    print(f"  总状态: {result['status']}")
+    print(f"  通过: {result['pass_count']}  |  警告: {result['warn_count']}  |  严重: {result['critical_count']}\n")
+    for c in result['checks']:
+        icon = '✅' if c['status'] == 'PASS' else '⚠️' if c['status'] == 'WARN' else '❌'
+        print(f"  {icon} [{c['name']}] {c['detail']}")
+    if result['warnings']:
+        print(f"\n  警告详情:")
+        for w in result['warnings']:
+            print(f"    ⚠️ {w}")
+    if result['criticals']:
+        print(f"\n  严重问题:")
+        for c in result['criticals']:
+            print(f"    ❌ {c}")
+    print(f"{'='*60}\n")
