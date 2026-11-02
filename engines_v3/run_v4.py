@@ -1,4 +1,4 @@
-"""engines_v3/run_v4.py - GMRE 4.0 完整集成版（防弹 + 宏观事件 + 完整轨道 + 新增微结构与归因）"""
+"""engines_v3/run_v4.py - GMRE 4.0 完整集成版（防弹 + 宏观事件 + 完整轨道 + 全量数据溯源）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -175,7 +175,6 @@ def main():
     except Exception as e:
         print(f"  ⚠️ GMS异常: {e}")
 
-    # 预轨：Fragility
     print(f"\n┌{'─'*58}┐\n│  【预轨】Fragility（提前计算）                       │\n└{'─'*58}┘\n")
     frag_level = 'N/A'
     try:
@@ -207,6 +206,9 @@ def main():
         ('标普500', 'SP500', 'Index', None),
         ('VIX', 'VIX', 'Index', None),
         ('美元/日元', 'USD_JPY', 'Price', None),
+        ('离岸人民币', 'USD_CNH', 'Price', None),
+        ('铁矿石内盘', 'IRON_ORE_DOMESTIC', 'CNY', None),
+        ('螺纹钢内盘', 'REBAR', 'CNY', None),
         ('中国10Y', 'CN_10Y_YIELD', '%', None),
         ('日本10Y', 'JP_10Y', '%', None),
         ('德国10Y', 'DE_10Y', '%', None),
@@ -252,13 +254,11 @@ def main():
 
     print(f"\n┌{'─'*58}┐\n│  【轨道3】多维度增强引擎                            │\n└{'─'*58}┘\n")
 
-    # 🆕 因子归因
     from engines_v3.factor_attribution import compute_factor_attribution
     from engines_v3.portfolio_optimizer import get_portfolio_advice
-    port_weights, _ = get_portfolio_advice('ORANGE', frag_score_val)  # 暂用ORANGE算权重来测因子
+    port_weights, _ = get_portfolio_advice('ORANGE', frag_score_val)
     factor_res = compute_factor_attribution(asof, port_weights)
 
-    # 🆕 微观结构扳机
     from engines_v3.microstructure_trigger import compute_microstructure_trigger
     micro_res = compute_microstructure_trigger(asof)
 
