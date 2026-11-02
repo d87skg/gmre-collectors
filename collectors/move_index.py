@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""collectors/move_index.py - MOVE 指数采集（带重试 + 代理支持）"""
+"""collectors/move_index.py - MOVE 指数采集（带日级缓存 + 重试 + 代理）"""
 import requests
 import sqlite3
 import time
@@ -7,17 +7,15 @@ import os
 from datetime import datetime, timezone
 
 DB_PATH = 'data/macro.db'
-
 YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/%5EMOVE"
 
-# 从 .env 读取代理配置（如果有）
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
 
-PROXY = os.environ.get('YAHOO_PROXY', None)
+PROXY = os.environ.get('YAHOO_PROXY', '')
 PROXIES = {"http": PROXY, "https": PROXY} if PROXY else None
 
 
@@ -57,6 +55,18 @@ def main():
     print(f"\n{'='*60}")
     print(f"  MOVE 指数采集 - {datetime.now().strftime('%Y-%m-%d')}")
     print(f"{'='*60}\n")
+
+    # 🆕 缓存检查：如果今天已经有数据，跳过网络请求
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        last_date = conn.execute("SELECT MAX(timestamp) FROM observations WHERE series_id='MOVE'").fetchone()[0]
+        conn.close()
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        if last_date == today_str:
+            print(f"  ⏭️ MOVE 今日已更新 ({last_date})，跳过网络请求 (0 请求)")
+            return
+    except Exception:
+        pass
 
     rows = fetch_move()
     if not rows:

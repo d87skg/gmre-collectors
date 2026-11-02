@@ -1,17 +1,18 @@
-"""engines_v3/data_correction.py - 数据修正（v2.3: 周频兼容 + 三源GOLD + SP500兜底）"""
+"""engines_v3/data_correction.py - 数据修正（v2.4: 周频兼容 + 三源GOLD + 30天增量 + 代理）"""
 import requests
 import sqlite3
 import io
 import pandas as pd
 import time
-from datetime import datetime
-
 import os
+from datetime import datetime, timedelta
+
 try:
     from dotenv import load_dotenv
     load_dotenv(r'D:\HGZC\.env')
 except ImportError:
     pass
+
 YAHOO_PROXY = os.environ.get('YAHOO_PROXY', '')
 YAHOO_PROXIES = {"http": YAHOO_PROXY, "https": YAHOO_PROXY} if YAHOO_PROXY else None
 
@@ -35,7 +36,10 @@ FRED_SERIES = {
 
 
 def fetch_fred(fred_id, local_id):
-    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={fred_id}"
+    # 🆕 只拉取过去 30 天，大幅度减少网络请求负载
+    start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={fred_id}&cosd={start_date}"
+    
     r = None
     for attempt in range(3):
         try:
@@ -94,7 +98,6 @@ def fetch_fred(fred_id, local_id):
 
 
 def fetch_sp500_yahoo():
-    """SP500 Yahoo 兜底"""
     url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC"
     params = {"interval": "1d", "range": "5d"}
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -118,7 +121,6 @@ def fetch_sp500_yahoo():
 
 
 def check_sp500_stale():
-    """检查 SP500 是否滞后 > 3 天，若是则用 Yahoo 兜底"""
     try:
         conn = sqlite3.connect(DB_PATH)
         row = conn.execute(
@@ -197,12 +199,9 @@ def process_gold():
     stooq_price = fetch_gold_stooq()
 
     candidates = []
-    if sina_price:
-        candidates.append(('Sina', sina_price))
-    if yahoo_price:
-        candidates.append(('Yahoo', yahoo_price))
-    if stooq_price:
-        candidates.append(('Stooq', stooq_price))
+    if sina_price: candidates.append(('Sina', sina_price))
+    if yahoo_price: candidates.append(('Yahoo', yahoo_price))
+    if stooq_price: candidates.append(('Stooq', stooq_price))
 
     if not candidates:
         print("    🔴 [警告] GOLD 三源全部失败！今日金价将使用历史缓存。")
@@ -239,7 +238,7 @@ def process_gold():
 
 if __name__ == "__main__":
     print(f"\n{'='*60}")
-    print(f"  数据修正 (v2.3: 周频兼容 + 三源GOLD + SP500兜底)")
+    print(f"  数据修正 (v2.4: 增量30天 + 三源GOLD + 代理)")
     print(f"{'='*60}\n")
 
     for fred_id, local_id in FRED_SERIES.items():
@@ -250,7 +249,6 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"  ❌ {fred_id:15s}: 未知异常 {str(e)[:60]}")
 
-    # 🆕 SP500 兜底检查
     if check_sp500_stale():
         print("\n  [SP500] FRED 滞后 > 3 天，启动 Yahoo 兜底...")
         rows = fetch_sp500_yahoo()
@@ -273,7 +271,6 @@ if __name__ == "__main__":
             print("    ❌ SP500 Yahoo 也失败，继续用历史缓存")
 
     process_gold()
-
     print(f"\n{'='*60}")
     print(f"  ✅ 数据修正完成")
     print(f"{'='*60}\n")

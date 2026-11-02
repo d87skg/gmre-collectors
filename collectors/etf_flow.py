@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""collectors/etf_flow.py - ETF 成交量采集（带重试 + 代理）"""
+"""collectors/etf_flow.py - ETF 成交量采集（带日级缓存 + 重试 + 代理）"""
 import requests
 import sqlite3
 import time
@@ -22,7 +22,7 @@ try:
 except ImportError:
     pass
 
-PROXY = os.environ.get('YAHOO_PROXY', None)
+PROXY = os.environ.get('YAHOO_PROXY', '')
 PROXIES = {"http": PROXY, "https": PROXY} if PROXY else None
 
 
@@ -62,6 +62,18 @@ def main():
     print(f"\n{'='*60}")
     print(f"  ETF 成交量采集 - {datetime.now().strftime('%Y-%m-%d')}")
     print(f"{'='*60}\n")
+
+    # 🆕 缓存检查：如果今天已经有 SPY 数据，跳过网络请求
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        last_date = conn.execute("SELECT MAX(timestamp) FROM observations WHERE series_id='SPY_VOLUME'").fetchone()[0]
+        conn.close()
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        if last_date == today_str:
+            print(f"  ⏭️ ETF 成交量今日已更新 ({last_date})，跳过网络请求 (0 请求)")
+            return
+    except Exception:
+        pass
 
     conn = sqlite3.connect(DB_PATH)
     total = 0
