@@ -1,4 +1,4 @@
-"""engines_v3/run_v4.py - GMRE 4.0 完整集成版（防弹 + 宏观事件 + 完整轨道 + 全量数据溯源）"""
+"""engines_v3/run_v4.py - GMRE 4.1 完整集成版（日频决策口径唯一 + 盘中实时参考）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -36,12 +36,14 @@ except ImportError:
 
 DB_PATH = 'data/macro.db'
 
+
 def get_git_commit():
     try:
         return subprocess.check_output(['git', 'rev-parse', 'HEAD'],
                                        cwd=os.path.dirname(__file__)).decode('utf-8').strip()[:8]
     except Exception:
         return "UNKNOWN"
+
 
 def get_series_meta(sid, override_value=None):
     try:
@@ -61,8 +63,9 @@ def get_series_meta(sid, override_value=None):
         return datetime.now().strftime('%Y-%m-%d'), override_value
     return "N/A", None
 
+
 def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_confirmed, p_r4_r5=None):
-    """Risk Gate v4.4 - 修复 CREDIT 误匹配 Bug"""
+    """Risk Gate v4.4 - 日频决策口径"""
     if frag_level == 'N/A' or frag_level is None:
         return 'UNKNOWN', '🚨 数据缺失：Fragility 状态无法计算'
     try:
@@ -99,6 +102,7 @@ def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_con
         return 'YELLOW', f'🟡 中等：Fragility={frag_score:.1f}'
     return 'GREEN', f'🟢 低风险：Fragility={frag_score:.1f}'
 
+
 def get_dual_phase_guide(gate, frag_score, cali_score, scenario, dxy_pct):
     if cali_score and cali_score >= 60:
         phase, emoji = '上半场（去杠杆中）', '🔴'
@@ -119,9 +123,10 @@ def get_dual_phase_guide(gate, frag_score, cali_score, scenario, dxy_pct):
     return {'phase': phase, 'phase_emoji': emoji,
             'cash_recommendation': cash, 'gold_recommendation': gold, 'note': note}
 
+
 def main():
     asof = datetime.now().strftime('%Y-%m-%d')
-    print(f"\n{'='*60}\n  GMRE 4.0 完整版 - {asof}\n{'='*60}\n")
+    print(f"\n{'='*60}\n  GMRE 4.1 完整版 - {asof}\n{'='*60}\n")
 
     print(f"{'-'*50}\n  📅 宏观事件倒计时检查\n{'-'*50}")
     check_upcoming_events(config_path="config/events_calendar.yaml")
@@ -187,7 +192,8 @@ def main():
     except Exception as e:
         print(f"  ⚠️ Fragility 提前计算失败: {e}")
 
-    print(f"\n{'─'*50}\n  🔍 核心数据溯源")
+    print(f"\n{'─'*50}\n  🔍 核心数据溯源（日频决策口径唯一）")
+
     rrp_override = None
     rrp_source_tag = ""
     if run_rrp_guard is not None:
@@ -199,9 +205,10 @@ def main():
         except Exception:
             pass
 
+    # 日频决策输入（进入 input_snapshot，参与预测日志 Hash）
     audit_sids = [
         ('RRP 余额', 'RRP_BALANCE', 'Billion USD', rrp_override),
-        ('10Y 收益率', 'YC10Y', '%', None),
+        ('10Y 收益率(日频YC10Y/决策)', 'YC10Y', '%', None),
         ('HY 信用利差', 'HY_SPREAD', '%', None),
         ('标普500', 'SP500', 'Index', None),
         ('VIX', 'VIX', 'Index', None),
@@ -209,6 +216,7 @@ def main():
         ('离岸人民币', 'USD_CNH', 'Price', None),
         ('铁矿石内盘', 'IRON_ORE_DOMESTIC', 'CNY', None),
         ('螺纹钢内盘', 'REBAR', 'CNY', None),
+        ('市场广度20D动量', 'BREADTH_20D_MOMENTUM', '%', None),
         ('中国10Y', 'CN_10Y_YIELD', '%', None),
         ('日本10Y', 'JP_10Y', '%', None),
         ('德国10Y', 'DE_10Y', '%', None),
@@ -218,24 +226,34 @@ def main():
         d, v = get_series_meta(sid, override_value=override)
         if v is not None:
             source_note = rrp_source_tag if name == 'RRP 余额' else ""
-            print(f"    {name:12s}: {d} | 值 = {v:.4f} {unit}{source_note}")
+            print(f"    {name:24s}: {d} | 值 = {v:.4f} {unit}{source_note}")
             input_snapshot[sid] = v
         else:
-            print(f"    {name:12s}: {d} | 值 = N/A")
+            print(f"    {name:24s}: {d} | 值 = N/A")
             input_snapshot[sid] = None
+
+    # 盘中实时参考（不进入 input_snapshot，不参与 Hash，不参与利差）
+    rt_date, us10y_rt = get_series_meta('US10Y_RT_TRADEWEB')
+    if us10y_rt is not None:
+        print(f"    {'10Y 美债(盘中Tradeweb/参考)':24s}: {rt_date} | 值 = {us10y_rt:.3f} % [仅参考，不参与决策与利差]")
+    else:
+        print(f"    {'10Y 美债(盘中Tradeweb/参考)':24s}: N/A | 值 = N/A")
+
     print(f"{'─'*50}")
 
     try:
         cn10y = get_series_meta('CN_10Y_YIELD')[1]
         jp10y = get_series_meta('JP_10Y')[1]
         de10y = get_series_meta('DE_10Y')[1]
-        us10y = get_series_meta('YC10Y')[1]
+        us10y = get_series_meta('YC10Y')[1]  # 利差只用日频 YC10Y
         if us10y and cn10y:
-            print(f"  [宏观联动] 中美10Y利差: {us10y - cn10y:+.2f}% (美 {us10y:.2f}% - 中 {cn10y:.2f}%)")
+            print(f"  [宏观联动] 中美10Y利差(日频YC10Y): {us10y - cn10y:+.2f}% (美 {us10y:.2f}% - 中 {cn10y:.2f}%)")
         if us10y and jp10y:
-            print(f"  [宏观联动] 美日10Y利差: {us10y - jp10y:+.2f}% (美 {us10y:.2f}% - 日 {jp10y:.2f}%)")
+            print(f"  [宏观联动] 美日10Y利差(日频YC10Y): {us10y - jp10y:+.2f}% (美 {us10y:.2f}% - 日 {jp10y:.2f}%)")
         if us10y and de10y:
-            print(f"  [宏观联动] 美德10Y利差: {us10y - de10y:+.2f}% (美 {us10y:.2f}% - 德 {de10y:.2f}%)")
+            print(f"  [宏观联动] 美德10Y利差(日频YC10Y): {us10y - de10y:+.2f}% (美 {us10y:.2f}% - 德 {de10y:.2f}%)")
+        if us10y_rt is not None:
+            print(f"  [盘中参考] 实时10Y Tradeweb = {us10y_rt:.3f}% （不参与上述利差计算）")
     except Exception:
         pass
     print(f"{'─'*50}")
@@ -336,7 +354,7 @@ def main():
         except Exception as e:
             print(f"❌ {str(e)[:50]}")
 
-    print(f"\n┌{'─'*58}┐\n│  【轨道4】GMRE 4.0 智能层                            │\n└{'─'*58}┘\n")
+    print(f"\n┌{'─'*58}┐\n│  【轨道4】GMRE 4.1 智能层                            │\n└{'─'*58}┘\n")
 
     cu_spread = get_series_meta('CU_SPREAD_PCT')[1]
     if cu_spread:
@@ -465,10 +483,11 @@ def main():
     _frag_display = frag_level if frag_level != 'N/A' else "N/A"
 
     print(f"\n{'='*60}")
-    print(f"  GMRE 4.0 运行完成")
+    print(f"  GMRE 4.1 运行完成")
     print(f"  Base Regime: {_regime_display} | Fragility: {_frag_display} | Risk Gate: {gate}")
     print(f"{'='*60}\n")
 
+    # ============ P0-B 落表：允许覆盖当日记录，避免“今日日志已存在，拒绝覆盖” ============
     try:
         snapshot_str = json.dumps(input_snapshot, sort_keys=True)
         input_hash = hashlib.sha256(snapshot_str.encode('utf-8')).hexdigest()[:16]
@@ -500,22 +519,21 @@ def main():
         }
 
         cursor = conn.cursor()
-        cursor.execute("""INSERT OR IGNORE INTO predictions_log
+        # 修复 P0-B：INSERT OR REPLACE，允许同一天重跑时覆盖最新结果
+        cursor.execute("""INSERT OR REPLACE INTO predictions_log
             (forecast_date, model_version, code_commit, input_snapshot_hash, regime,
              p_r4_r5, fragility_score, risk_gate, data_quality_state, details_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (asof, 'GMRE_4.0', code_commit, input_hash, regime_label,
+            (asof, 'GMRE_4.1', code_commit, input_hash, regime_label,
              p_r4_r5_val, frag_score_val, gate, audit_status,
              json.dumps(details, ensure_ascii=False)))
 
-        if cursor.rowcount > 0:
-            print(f"✅ [P0-B] 不可篡改预测日志已归档 (Hash: {input_hash})")
-        else:
-            print(f"⚠️ [P0-B] 今日预测日志已存在，拒绝覆盖。")
+        print(f"✅ [P0-B] 预测日志已归档/覆盖 (Hash: {input_hash})")
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"❌ [P0-B] 预测日志归档失败: {e}")
+
 
 if __name__ == "__main__":
     main()

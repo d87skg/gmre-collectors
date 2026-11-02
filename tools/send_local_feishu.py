@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - GMRE 4.0 全息推送（全维度数据版）"""
+"""tools/send_local_feishu.py - GMRE 4.1 全息推送（日频决策 + 盘中参考分离）"""
 import os
 import requests
 import json
@@ -19,11 +19,13 @@ WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
 SECRET = os.environ.get('FEISHU_SECRET')
 DB_PATH = 'data/macro.db'
 
+
 def gen_sign(timestamp, secret):
     string_to_sign = f'{timestamp}\n{secret}'
     return base64.b64encode(
         hmac.new(string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()
     ).decode('utf-8')
+
 
 def get_latest_data():
     asof = datetime.now().strftime('%Y-%m-%d')
@@ -34,7 +36,7 @@ def get_latest_data():
         'rrp_source': 'N/A',
         'caps_al': 'N/A', 'caps_cu': 'N/A', 'cu_spread': 0.0,
         'lti_score': 0.0, 'lti_level': 'UNKNOWN',
-        'y10': 0.0, 'rrp': 0.0, 'hy_oas': 0.0, 'vix': 0.0,
+        'y10': 0.0, 'us10y_rt': 0.0, 'rrp': 0.0, 'hy_oas': 0.0, 'vix': 0.0,
         'bitget_fr': 0.0, 'coinbase_prem': 0.0, 'hl_imb': 0.0,
         'btc_etf_flow': 0.0, 'fear_greed': 0,
         'lti_raw_fr': 0.0, 'lti_raw_imb': 0.0,
@@ -42,9 +44,9 @@ def get_latest_data():
         'dxy': 0.0, 'usdjpy': 0.0, 'usdcny': 0.0, 'usdcnh': 0.0, 'spx': 0.0,
         'cn10y': 0.0, 'jp10y': 0.0, 'de10y': 0.0,
         'us_cn_spread': 0.0, 'us_jp_spread': 0.0, 'us_de_spread': 0.0,
-        # 扩展指标
-        'spy_rsp_ratio': 0.0, 'iron_ore': 0.0, 'rebar': 0.0,
-        # GMRE 4.0
+        # 扩展指标（修正：市场广度用 20D 动量，不再用 SPY/RSP 绝对比值）
+        'breadth_momentum': 0.0, 'iron_ore': 0.0, 'rebar': 0.0,
+        # GMRE 4.1
         'dxy_5y_pct': None, 'dollar_scenario': 'N/A', 'dollar_assets': {},
         'cali_score': 0.0, 'cali_level': 'N/A', 'cali_detail': {},
         'crowding_score': 0.0, 'crowding_level': 'N/A',
@@ -81,14 +83,16 @@ def get_latest_data():
             data['p_high_risk'] = float(prob_row[2] or 0)
 
         try:
-            micro_row = conn.execute("SELECT details_json FROM predictions_log WHERE forecast_date=?", (asof,)).fetchone()
+            micro_row = conn.execute(
+                "SELECT details_json FROM predictions_log WHERE forecast_date=?", (asof,)
+            ).fetchone()
             if micro_row and micro_row[0]:
                 detail_json = json.loads(micro_row[0])
                 micro_res = detail_json.get('micro_trigger', {})
                 data['micro_status'] = micro_res.get('status', 'N/A')
                 data['micro_score'] = micro_res.get('score', 0.0)
                 data['micro_details'] = micro_res.get('details', {})
-                
+
                 factor_res = detail_json.get('factor_concentration', {})
                 data['factor_status'] = factor_res.get('status', 'N/A')
                 data['factor_msg'] = factor_res.get('msg', 'N/A')
@@ -175,11 +179,16 @@ def get_latest_data():
             data['rrp'] = get_val('RRP_BALANCE')
             data['rrp_source'] = 'FRED(降级)'
 
+        # 日频决策口径：10Y 只用 YC10Y
         data['y10'] = get_val('YC10Y')
+        # 盘中实时参考：不参与利差、不参与决策
+        data['us10y_rt'] = get_val('US10Y_RT_TRADEWEB')
+
         data['cn10y'] = get_val('CN_10Y_YIELD')
         data['jp10y'] = get_val('JP_10Y')
         data['de10y'] = get_val('DE_10Y')
 
+        # 利差计算只用日频 YC10Y
         if data['y10'] and data['cn10y']:
             data['us_cn_spread'] = data['y10'] - data['cn10y']
         if data['y10'] and data['jp10y']:
@@ -189,9 +198,9 @@ def get_latest_data():
 
         data['hy_oas'] = get_val('HY_SPREAD')
         data['vix'] = get_val('VIX')
-        
-        # 🆕 读取扩展数据
-        data['spy_rsp_ratio'] = get_val('SPY_RSP_RATIO')
+
+        # 扩展数据（修正：市场广度 20D 动量）
+        data['breadth_momentum'] = get_val('BREADTH_20D_MOMENTUM')
         data['iron_ore'] = get_val('IRON_ORE_DOMESTIC')
         data['rebar'] = get_val('REBAR')
         data['usdcnh'] = get_val('USD_CNH')
@@ -246,6 +255,7 @@ def get_latest_data():
             conn.close()
     return data
 
+
 def get_dual_phase(data):
     if data['cali_score'] >= 60:
         return '🔴 上半场（去杠杆中）', '50-70%'
@@ -255,6 +265,7 @@ def get_dual_phase(data):
         return '🟡 过渡期（政策底已现，市场底待确认）', '40-60%'
     else:
         return '🟢 下半场（降息重估）', '10-20%'
+
 
 def main():
     if not WEBHOOK or not SECRET:
@@ -274,22 +285,30 @@ def main():
         action_guide = "🚨 极度危险：沪铜发生史诗级逼仓，宏观流动性枯竭，现金为王，切勿进场！"
     elif d['risk_gate'] == 'RED':
         reasons = []
-        if d['frag_score'] >= 80: reasons.append(f"Fragility={d['frag_score']:.1f}")
-        if d['p_high_risk'] >= 0.50: reasons.append(f"P(R4+R5)={d['p_high_risk']*100:.1f}%")
+        if d['frag_score'] >= 80:
+            reasons.append(f"Fragility={d['frag_score']:.1f}")
+        if d['p_high_risk'] >= 0.50:
+            reasons.append(f"P(R4+R5)={d['p_high_risk']*100:.1f}%")
         action_guide = f"⚠️ 行动指南：现金为王，久期与杠杆降至最低。触发：{', '.join(reasons) or '多压力层共振'}"
     elif d['risk_gate'] == 'ORANGE':
         reasons = []
-        if d['frag_score'] >= 65: reasons.append(f"Fragility={d['frag_score']:.1f}")
-        if d['p_high_risk'] >= 0.30: reasons.append(f"P(R4+R5)={d['p_high_risk']*100:.1f}%")
+        if d['frag_score'] >= 65:
+            reasons.append(f"Fragility={d['frag_score']:.1f}")
+        if d['p_high_risk'] >= 0.30:
+            reasons.append(f"P(R4+R5)={d['p_high_risk']*100:.1f}%")
         action_guide = f"⚖️ 行动指南：保持防守，控制仓位，等待右侧信号。触发：{', '.join(reasons) or '结构性脆弱'}"
     else:
         action_guide = "🟢 行动指南：可适度提升风险敞口，顺势而为。"
 
     micro_alerts = []
-    if d['bitget_fr'] > 50: micro_alerts.append(f"🚨 资金费率极度拥挤: {d['bitget_fr']:+.2f}% 年化")
-    if d['coinbase_prem'] < -0.1: micro_alerts.append(f"🇺🇸 机构现货抛压: {d['coinbase_prem']:+.3f}%")
-    if d['hl_imb'] > 3.0: micro_alerts.append(f"📊 持仓量剧增: 24H变幅 {d['hl_imb']:+.2f}%")
-    elif d['hl_imb'] < -3.0: micro_alerts.append(f"📊 持仓量剧减: 24H变幅 {d['hl_imb']:+.2f}%")
+    if d['bitget_fr'] > 50:
+        micro_alerts.append(f"🚨 资金费率极度拥挤: {d['bitget_fr']:+.2f}% 年化")
+    if d['coinbase_prem'] < -0.1:
+        micro_alerts.append(f"🇺🇸 机构现货抛压: {d['coinbase_prem']:+.3f}%")
+    if d['hl_imb'] > 3.0:
+        micro_alerts.append(f"📊 持仓量剧增: 24H变幅 {d['hl_imb']:+.2f}%")
+    elif d['hl_imb'] < -3.0:
+        micro_alerts.append(f"📊 持仓量剧减: 24H变幅 {d['hl_imb']:+.2f}%")
     micro_text = "\n".join(micro_alerts) if micro_alerts else "  · 微观结构暂无极端异动"
 
     liquidity_warning = ""
@@ -303,13 +322,17 @@ def main():
     spx_display = f"{d['spx']:.1f}" if d['spx'] > 0 else "N/A"
     bj_time = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
 
-    if d['p_high_risk'] >= 0.50: prob_icon = "🔴"
-    elif d['p_high_risk'] >= 0.30: prob_icon = "🟠"
-    elif d['p_high_risk'] >= 0.15: prob_icon = "🟡"
-    else: prob_icon = "🟢"
+    if d['p_high_risk'] >= 0.50:
+        prob_icon = "🔴"
+    elif d['p_high_risk'] >= 0.30:
+        prob_icon = "🟠"
+    elif d['p_high_risk'] >= 0.15:
+        prob_icon = "🟡"
+    else:
+        prob_icon = "🟢"
 
     phase_text, cash_rec = get_dual_phase(d)
-    
+
     if d['risk_gate'] == 'RED' or d['cali_score'] > 70:
         hedge_text = "• SPX: Buy 3M 5% OTM Put\n• BTC: Buy 1M 10% OTM Put"
     elif d['risk_gate'] == 'ORANGE':
@@ -327,7 +350,14 @@ def main():
     }
     scenario_text = scenario_map.get(d['dollar_scenario'], '⚪ ' + str(d['dollar_scenario']))
 
-    text = f"""📊 **GMRE 4.0 全息风控晨报** - {d['asof']}
+    # 市场广度：20D 动量
+    breadth_display = f"{d['breadth_momentum']:+.2f}%"
+    breadth_note = "负=小盘拖累/宽度恶化" if d['breadth_momentum'] < 0 else "正=小盘相对走强/宽度改善"
+
+    # 10Y 美债：日频决策 + 盘中参考分离
+    us10y_rt_display = f"{d['us10y_rt']:.3f}%" if d['us10y_rt'] and d['us10y_rt'] > 0 else "N/A"
+
+    text = f"""📊 **GMRE 4.1 全息风控晨报** - {d['asof']}
 ====================================
 🚦 **Risk Gate**: {d['risk_gate']}
 ⚠️ **Fragility**: {d['frag_level']}
@@ -343,10 +373,10 @@ def main():
 
 🌡️ **CALI 流动性**: {d['cali_score']:.1f}/100 ({d['cali_level']})
   • MOVE={d.get('cali_detail',{}).get('MOVE',{}).get('value','N/A')} | HY斜率={d.get('cali_detail',{}).get('HY_slope','N/A')} | 期限溢价={d.get('cali_detail',{}).get('Term_Premium','N/A')} | VIX={d.get('cali_detail',{}).get('VIX','N/A')}
-  
+
 🔬 **微观结构扳机**: {d.get('micro_status', 'N/A')} (评分={d.get('micro_score', 0.0)})
   • 期权/盘口: {d.get('micro_details', {})}
-  
+
 📐 **因子集中度**: {d.get('factor_status', 'N/A')} | {d.get('factor_msg', 'N/A')}
 ====================================
 💼 **风险平价仓位建议**:
@@ -356,14 +386,16 @@ def main():
 🌍 **大类资产与汇率矩阵**:
   • 黄金: ${d['gold']:.2f} | 白银: ${d['silver']:.2f}
   • 原油 (WTI): ${d['oil']:.2f} | 铜: ${d['copper']:.2f}
-  • 美股宽度(SPY/RSP): {d['spy_rsp_ratio']:.4f} (越高越集中于巨头)
+  • 市场广度 20D 动量: {breadth_display} ({breadth_note})
   • 黑色系: 铁矿石 {d['iron_ore']:.1f} | 螺纹钢 {d['rebar']:.1f}
   • 美股: {spx_display}
   • 美元指数: {d['dxy']:.2f} | 美元/日元: {d['usdjpy']:.2f} | 离岸人民币: {cnh_display} | 在岸人民币: {cny_display}
 
 🌐 **全球宏观与利差监控**:
-  • 10Y 美债: {d['y10']:.2f}% | 中国: {d['cn10y']:.2f}% | 日本: {d['jp10y']:.2f}% | 德国: {d['de10y']:.2f}%
+  • 10Y 美债(日频YC10Y/决策): {d['y10']:.2f}% | 盘中Tradeweb(参考): {us10y_rt_display}
+  • 中国10Y: {d['cn10y']:.2f}% | 日本10Y: {d['jp10y']:.2f}% | 德国10Y: {d['de10y']:.2f}%
   • 中美利差: {d['us_cn_spread']:+.2f}% | 美日利差: {d['us_jp_spread']:+.2f}% | 美德利差: {d['us_de_spread']:+.2f}%
+  • 注：盘中实时10Y不参与上述利差与 Risk Gate 计算
   • RRP 余额: {d['rrp']:.2f} 十亿美元（约 {d['rrp']*10:.1f} 亿美元）[{d['rrp_source']}] | HY OAS: {d['hy_oas']*100:.0f} bp | VIX: {d['vix']:.2f}
 
 🚨 **压力层 (S 状态机)**:
@@ -397,9 +429,10 @@ def main():
     }
     r = requests.post(WEBHOOK, json=payload, timeout=10)
     if r.status_code == 200 and r.json().get('code') == 0:
-        print("✅ GMRE 4.0 全息晨报已成功推送到飞书！")
+        print("✅ GMRE 4.1 全息晨报已成功推送到飞书！")
     else:
         print(f"❌ 飞书推送失败: {r.text}")
+
 
 if __name__ == "__main__":
     main()
