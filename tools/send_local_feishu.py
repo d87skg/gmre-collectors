@@ -93,16 +93,20 @@ def get_latest_data():
 
         # 🆕 CALI
         cali_row = conn.execute(
-            "SELECT cali_score, level FROM cali_engine WHERE asof_date=?",
+            "SELECT cali_score, level, detail FROM cali_engine WHERE asof_date=?",
             (asof,)
         ).fetchone()
         if not cali_row:
             cali_row = conn.execute(
-                "SELECT cali_score, level FROM cali_engine ORDER BY asof_date DESC LIMIT 1"
+                "SELECT cali_score, level, detail FROM cali_engine ORDER BY asof_date DESC LIMIT 1"
             ).fetchone()
         if cali_row:
             data['cali_score'] = float(cali_row[0] or 0)
             data['cali_level'] = cali_row[1] or 'N/A'
+            try:
+                data['cali_detail'] = json.loads(cali_row[2]) if len(cali_row) > 2 and cali_row[2] else {}
+            except Exception:
+                data['cali_detail'] = {}
 
         # 🆕 Crowding
         cr_row = conn.execute(
@@ -133,6 +137,12 @@ def get_latest_data():
         ).fetchone()
         if row:
             data['lti_score'], data['lti_level'] = round(row[0], 1), row[1]
+        try:
+            from engines_v3 import lti_engine as _lti_mod
+            _lti_full = _lti_mod.compute_lti(asof)
+            data['lti_details'] = _lti_full.get('details', {})
+        except Exception:
+            data['lti_details'] = {}
 
         def get_val(sid):
             r = conn.execute(
@@ -319,8 +329,10 @@ def main():
 💵 **美元锚定区**:
   • DXY: {d['dxy']:.2f} (5y_pct={dxy_pct_str})
   • 情景判定: {scenario_text}
+  • 四资产5D: WTI {d.get('dollar_assets',{}).get('WTI_5D','N/A')}% | GOLD {d.get('dollar_assets',{}).get('GOLD_5D','N/A')}% | 10Y {d.get('dollar_assets',{}).get('Y10_5D','N/A')}% | DXY {d.get('dollar_assets',{}).get('DXY_5D','N/A')}%
 
 🌡️ **CALI 流动性**: {d['cali_score']:.1f}/100 ({d['cali_level']})
+  • MOVE={d.get('cali_detail',{}).get('MOVE',{}).get('value','N/A')} | HY斜率={d.get('cali_detail',{}).get('HY_slope','N/A')} | 期限溢价={d.get('cali_detail',{}).get('Term_Premium','N/A')} | VIX={d.get('cali_detail',{}).get('VIX','N/A')}
 🔬 **拥挤度**: {d['crowding_score']:.1f}/100 ({d['crowding_level']})
 
 🎯 **双阶段判定**: {phase_text}
@@ -341,7 +353,7 @@ def main():
 🌐 **全球宏观与利差监控**:
   • 10Y 美债: {d['y10']:.2f}% | 中国: {d['cn10y']:.2f}% | 日本: {d['jp10y']:.2f}% | 德国: {d['de10y']:.2f}%
   • 中美利差: {d['us_cn_spread']:+.2f}% | 美日利差: {d['us_jp_spread']:+.2f}% | 美德利差: {d['us_de_spread']:+.2f}%
-  • RRP 余额: {d['rrp']:.2f} B USD [{d['rrp_source']}] | HY OAS: {d['hy_oas']*100:.0f} bp | VIX: {d['vix']:.2f}
+  • RRP 余额: {d['rrp']:.2f} 十亿美元（约 {d['rrp']*10:.1f} 亿美元）[{d['rrp_source']}] | HY OAS: {d['hy_oas']*100:.0f} bp | VIX: {d['vix']:.2f}
 
 🚨 **压力层 (S 状态机)**:
   {d['stress_layers']}
@@ -356,6 +368,7 @@ def main():
 💧 **清算透明度 (LTI)**:
   • {d['lti_level']} ({d['lti_score']})
   • FR极值分: {d['lti_raw_fr']:.1f} | 持仓24H变幅: {d['lti_raw_imb']:+.2f}%
+  • Gold_Stock: {d.get('lti_details',{}).get('Gold_Stock','N/A')}
 
 🛡️ **对冲建议**:
 {hedge_text}

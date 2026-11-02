@@ -88,7 +88,7 @@ def check_alerts(asof: str) -> dict:
         alerts.append({
             'level': 'CRITICAL',
             'type': 'RRP_DEPLETION',
-            'msg': f"⚠️ RRP 余额仅 {rrp_now*10:.1f} 亿美元（{rrp_now:.2f} 十亿），接近耗尽 [{_rrp_src}]",
+            'msg': f"⚠️ RRP 余额仅 {rrp_now:.2f} 十亿美元（约 {rrp_now*10:.1f} 亿美元），接近耗尽 [{_rrp_src}]",
             'metric': {'rrp_billion_usd': round(rrp_now, 3), 'source': _rrp_src}
         })
     elif rrp_20d_chg < -RRP_DRAIN_WARNING:

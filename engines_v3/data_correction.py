@@ -6,6 +6,15 @@ import pandas as pd
 import time
 from datetime import datetime
 
+import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv(r'D:\HGZC\.env')
+except ImportError:
+    pass
+YAHOO_PROXY = os.environ.get('YAHOO_PROXY', '')
+YAHOO_PROXIES = {"http": YAHOO_PROXY, "https": YAHOO_PROXY} if YAHOO_PROXY else None
+
 DB_PATH = 'data/macro.db'
 PROXIES = None
 
@@ -90,7 +99,7 @@ def fetch_sp500_yahoo():
     params = {"interval": "1d", "range": "5d"}
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=15)
+        r = requests.get(url, params=params, headers=headers, timeout=15, proxies=YAHOO_PROXIES)
         if r.status_code == 200:
             data = r.json()
             result = data.get('chart', {}).get('result', [])
@@ -150,7 +159,7 @@ def fetch_gold_yahoo():
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     for attempt in range(3):
         try:
-            r = requests.get(url, params=params, headers=headers, timeout=15)
+            r = requests.get(url, params=params, headers=headers, timeout=15, proxies=YAHOO_PROXIES)
             if r.status_code == 200:
                 data = r.json()
                 result = data.get('chart', {}).get('result', [])
