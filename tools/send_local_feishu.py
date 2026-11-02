@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - GMRE 4.0 全息推送（美元锚定 + CALI + 双阶段 + 对冲）"""
+"""tools/send_local_feishu.py - GMRE 4.0 全息推送（含微结构 + 因子归因）"""
 import os
 import requests
 import json
@@ -44,11 +44,15 @@ def get_latest_data():
         'dxy': 0.0, 'usdjpy': 0.0, 'usdcny': 0.0, 'spx': 0.0,
         'cn10y': 0.0, 'jp10y': 0.0, 'de10y': 0.0,
         'us_cn_spread': 0.0, 'us_jp_spread': 0.0, 'us_de_spread': 0.0,
-        # 🆕 GMRE 4.0 字段
-        'dxy_5y_pct': None, 'dollar_scenario': 'N/A',
-        'cali_score': 0.0, 'cali_level': 'N/A',
+        # GMRE 4.0 字段
+        'dxy_5y_pct': None, 'dollar_scenario': 'N/A', 'dollar_assets': {},
+        'cali_score': 0.0, 'cali_level': 'N/A', 'cali_detail': {},
         'crowding_score': 0.0, 'crowding_level': 'N/A',
         'dual_phase': 'N/A', 'cash_rec': 'N/A',
+        # 🆕 微观与归因
+        'micro_status': 'N/A', 'micro_score': 0.0, 'micro_details': {},
+        'factor_status': 'N/A', 'factor_msg': 'N/A',
+        'lti_details': {},
     }
 
     try:
@@ -78,7 +82,23 @@ def get_latest_data():
             data['p_r5'] = float(prob_row[1] or 0)
             data['p_high_risk'] = float(prob_row[2] or 0)
 
-        # 🆕 美元锚定
+        # 🆕 解析预测日志中的微观与因子数据
+        try:
+            micro_row = conn.execute("SELECT details_json FROM predictions_log WHERE forecast_date=?", (asof,)).fetchone()
+            if micro_row and micro_row[0]:
+                detail_json = json.loads(micro_row[0])
+                micro_res = detail_json.get('micro_trigger', {})
+                data['micro_status'] = micro_res.get('status', 'N/A')
+                data['micro_score'] = micro_res.get('score', 0.0)
+                data['micro_details'] = micro_res.get('details', {})
+                
+                factor_res = detail_json.get('factor_concentration', {})
+                data['factor_status'] = factor_res.get('status', 'N/A')
+                data['factor_msg'] = factor_res.get('msg', 'N/A')
+        except Exception:
+            pass
+
+        # 美元锚定
         da_row = conn.execute(
             "SELECT dxy, dxy_5y_pct, scenario, detail FROM dollar_anchor WHERE asof_date=?",
             (asof,)
@@ -90,8 +110,12 @@ def get_latest_data():
         if da_row:
             data['dxy_5y_pct'] = float(da_row[1]) if da_row[1] is not None else None
             data['dollar_scenario'] = da_row[2] or 'N/A'
+            try:
+                data['dollar_assets'] = json.loads(da_row[3]).get('assets', {})
+            except Exception:
+                pass
 
-        # 🆕 CALI
+        # CALI
         cali_row = conn.execute(
             "SELECT cali_score, level, detail FROM cali_engine WHERE asof_date=?",
             (asof,)
@@ -108,7 +132,7 @@ def get_latest_data():
             except Exception:
                 data['cali_detail'] = {}
 
-        # 🆕 Crowding
+        # Crowding
         cr_row = conn.execute(
             "SELECT score, level FROM crowding_engine WHERE asof_date=?",
             (asof,)
@@ -282,6 +306,11 @@ def main():
         micro_alerts.append(f"📊 持仓量剧减: 24H变幅 {d['hl_imb']:+.2f}%")
     micro_text = "\n".join(micro_alerts) if micro_alerts else "  · 微观结构暂无极端异动"
 
+    # 🆕 流动性阻断警告
+    liquidity_warning = ""
+    if d.get('micro_status') == 'CRITICAL':
+        liquidity_warning = "\n🚨 **执行阻断**: 微观结构极度恶化，盘口深度枯竭，禁止使用市价单，请使用限价单或观望！"
+
     icon_cu = "⚪" if d['caps_cu'] == 'N/A' else ("🚨" if isinstance(d['caps_cu'], float) and d['caps_cu'] >= 60 else "🟡")
     icon_al = "⚪" if d['caps_al'] == 'N/A' else ("🚨" if isinstance(d['caps_al'], float) and d['caps_al'] >= 60 else "🟡")
     cny_display = f"{d['usdcny']:.4f}" if d['usdcny'] > 0 else "N/A"
@@ -314,6 +343,7 @@ def main():
         'RATE_CUT_FORCED': '🔴 降息倒逼路径',
         'HIGH_RATE_MAINTAINED': '🟢 高利率维持路径',
         'MIXED': '🟡 混合信号',
+        'LIQUIDITY_SQUEEZE': '🚨 流动性挤压',
         'N/A': '⚪ 数据不足'
     }
     scenario_text = scenario_map.get(d['dollar_scenario'], '⚪ ' + str(d['dollar_scenario']))
@@ -325,6 +355,7 @@ def main():
 {prob_icon} **概率引擎**: P(R4+R5) = {d['p_high_risk']*100:.2f}%
 😱 **情绪指数**: {d['fear_greed']} (Fear & Greed)
 {action_guide}
+{liquidity_warning}
 ====================================
 💵 **美元锚定区**:
   • DXY: {d['dxy']:.2f} (5y_pct={dxy_pct_str})
@@ -333,10 +364,11 @@ def main():
 
 🌡️ **CALI 流动性**: {d['cali_score']:.1f}/100 ({d['cali_level']})
   • MOVE={d.get('cali_detail',{}).get('MOVE',{}).get('value','N/A')} | HY斜率={d.get('cali_detail',{}).get('HY_slope','N/A')} | 期限溢价={d.get('cali_detail',{}).get('Term_Premium','N/A')} | VIX={d.get('cali_detail',{}).get('VIX','N/A')}
-🔬 **拥挤度**: {d['crowding_score']:.1f}/100 ({d['crowding_level']})
-
-🎯 **双阶段判定**: {phase_text}
-  • 建议现金: {cash_rec}
+  
+🔬 **微观结构扳机**: {d.get('micro_status', 'N/A')} (评分={d.get('micro_score', 0.0)})
+  • 期权/盘口: {d.get('micro_details', {})}
+  
+📐 **因子集中度**: {d.get('factor_status', 'N/A')} | {d.get('factor_msg', 'N/A')}
 ====================================
 💼 **风险平价仓位建议**:
   • 现金留存: {cash_pct:.1f}%

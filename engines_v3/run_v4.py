@@ -1,4 +1,4 @@
-"""engines_v3/run_v4.py - GMRE 4.0 完整集成版（Fragility 提前 + 新引擎调用）"""
+"""engines_v3/run_v4.py - GMRE 4.0 完整集成版（防弹 + 宏观事件 + 完整轨道 + 新增微结构与归因）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -36,14 +36,12 @@ except ImportError:
 
 DB_PATH = 'data/macro.db'
 
-
 def get_git_commit():
     try:
         return subprocess.check_output(['git', 'rev-parse', 'HEAD'],
                                        cwd=os.path.dirname(__file__)).decode('utf-8').strip()[:8]
     except Exception:
         return "UNKNOWN"
-
 
 def get_series_meta(sid, override_value=None):
     try:
@@ -63,7 +61,6 @@ def get_series_meta(sid, override_value=None):
         return datetime.now().strftime('%Y-%m-%d'), override_value
     return "N/A", None
 
-
 def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_confirmed, p_r4_r5=None):
     """Risk Gate v4.4 - 修复 CREDIT 误匹配 Bug"""
     if frag_level == 'N/A' or frag_level is None:
@@ -78,7 +75,6 @@ def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_con
     if systemic_confirmed:
         return 'BLACK', '🚨 系统性危机已确认'
 
-    # 修复：严格匹配 CREDIT_STRESS，避免和 USD_CREDIT_DEGRADATION 混淆
     red_reasons = []
     if frag_score >= 80:
         red_reasons.append(f"Fragility={frag_score:.1f}≥80")
@@ -103,9 +99,7 @@ def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_con
         return 'YELLOW', f'🟡 中等：Fragility={frag_score:.1f}'
     return 'GREEN', f'🟢 低风险：Fragility={frag_score:.1f}'
 
-
 def get_dual_phase_guide(gate, frag_score, cali_score, scenario, dxy_pct):
-    """双阶段操作指南"""
     if cali_score and cali_score >= 60:
         phase, emoji = '上半场（去杠杆中）', '🔴'
     elif dxy_pct and dxy_pct < 10:
@@ -125,7 +119,6 @@ def get_dual_phase_guide(gate, frag_score, cali_score, scenario, dxy_pct):
     return {'phase': phase, 'phase_emoji': emoji,
             'cash_recommendation': cash, 'gold_recommendation': gold, 'note': note}
 
-
 def main():
     asof = datetime.now().strftime('%Y-%m-%d')
     print(f"\n{'='*60}\n  GMRE 4.0 完整版 - {asof}\n{'='*60}\n")
@@ -136,7 +129,6 @@ def main():
 
     audit_status, regime_label, p_r4_r5_val, frag_score_val = 'UNKNOWN', 'UNKNOWN', 0.0, 0.0
 
-    # 数据自检
     print(f"{'-'*60}")
     try:
         audit = data_quality_check.run_audit(asof)
@@ -147,7 +139,6 @@ def main():
     except Exception as e:
         print(f"  ⚠️ 数据自检异常: {e}")
 
-    # 轨道1
     print(f"\n┌{'─'*58}┐\n│  【轨道1】Base Regime (R0-R6)                     │\n└{'─'*58}┘\n")
     for mod in [engine_inf, engine_mon, engine_fis, engine_liq, engine_risk]:
         try:
@@ -197,7 +188,6 @@ def main():
     except Exception as e:
         print(f"  ⚠️ Fragility 提前计算失败: {e}")
 
-    # 核心数据溯源
     print(f"\n{'─'*50}\n  🔍 核心数据溯源")
     rrp_override = None
     rrp_source_tag = ""
@@ -248,7 +238,6 @@ def main():
         pass
     print(f"{'─'*50}")
 
-    # 轨道2
     print(f"\n┌{'─'*58}┐\n│  【轨道2】Stress Overlay V2 (S0-S10)               │\n└{'─'*58}┘\n")
     stress = {}
     try:
@@ -261,8 +250,17 @@ def main():
     except Exception as e:
         print(f"  ⚠️ Stress异常: {e}")
 
-    # 轨道3
     print(f"\n┌{'─'*58}┐\n│  【轨道3】多维度增强引擎                            │\n└{'─'*58}┘\n")
+
+    # 🆕 因子归因
+    from engines_v3.factor_attribution import compute_factor_attribution
+    from engines_v3.portfolio_optimizer import get_portfolio_advice
+    port_weights, _ = get_portfolio_advice('ORANGE', frag_score_val)  # 暂用ORANGE算权重来测因子
+    factor_res = compute_factor_attribution(asof, port_weights)
+
+    # 🆕 微观结构扳机
+    from engines_v3.microstructure_trigger import compute_microstructure_trigger
+    micro_res = compute_microstructure_trigger(asof)
 
     dollar_result = {}
     print(f"  [Dollar_Anchor] ", end='', flush=True)
@@ -311,6 +309,9 @@ def main():
     except Exception as e:
         print(f"❌ {str(e)[:50]}")
 
+    print(f"  [MicroTrigger]  {micro_res.get('status')} | 评分={micro_res.get('score')} | {micro_res.get('details')}")
+    print(f"  [FactorConc]    {factor_res.get('status')} | {factor_res.get('msg', 'N/A')}")
+
     for name, fn in [
         ('Positioning', lambda: __import__('engines_v3.positioning_engine', fromlist=['evaluate_positioning']).evaluate_positioning(asof)),
         ('Velocity', lambda: __import__('engines_v3.velocity_engine', fromlist=['evaluate_velocity']).evaluate_velocity(asof)),
@@ -335,7 +336,6 @@ def main():
         except Exception as e:
             print(f"❌ {str(e)[:50]}")
 
-    # 轨道4
     print(f"\n┌{'─'*58}┐\n│  【轨道4】GMRE 4.0 智能层                            │\n└{'─'*58}┘\n")
 
     cu_spread = get_series_meta('CU_SPREAD_PCT')[1]
@@ -374,7 +374,6 @@ def main():
     except Exception as e:
         print(f"❌ {str(e)[:50]}")
 
-    # 尾轨
     print(f"\n┌{'─'*58}┐\n│  【尾轨】尾部状态 + 预警 + 对冲                    │\n└{'─'*58}┘\n")
     try:
         tail = yen_carry_state.update_state(asof)
@@ -414,7 +413,6 @@ def main():
     except Exception as e:
         print(f"  ⚠️ 对冲模块异常: {e}")
 
-    # 防线 V4
     print(f"\n┌{'─'*58}┐\n│  【执行】防线0-7                                    │\n└{'─'*58}┘\n")
     defense = {}
     try:
@@ -427,7 +425,6 @@ def main():
     except Exception as e:
         print(f"  ⚠️ 防线异常: {e}")
 
-    # 计算最终风险
     contagion_status = 'NORMAL'
     gate, gate_msg = compute_risk_gate(
         frag_level,
@@ -441,7 +438,6 @@ def main():
     print(f"  {gate_msg}")
     print(f"  Risk Gate: {gate}")
 
-    # 双阶段操作指南
     dxy_pct = dollar_result.get('dxy_5y_pct') if dollar_result else None
     cali_score = cali_result.get('cali_score') if cali_result else None
     scenario = dollar_result.get('scenario', 'N/A') if dollar_result else 'N/A'
@@ -473,7 +469,6 @@ def main():
     print(f"  Base Regime: {_regime_display} | Fragility: {_frag_display} | Risk Gate: {gate}")
     print(f"{'='*60}\n")
 
-    # P0-B 落表
     try:
         snapshot_str = json.dumps(input_snapshot, sort_keys=True)
         input_hash = hashlib.sha256(snapshot_str.encode('utf-8')).hexdigest()[:16]
@@ -499,6 +494,8 @@ def main():
             "dollar_anchor": dollar_result.get('scenario') if dollar_result else None,
             "cali_score": cali_result.get('cali_score') if cali_result else None,
             "crowding_score": crowding_result.get('score') if crowding_result else None,
+            "micro_trigger": micro_res,
+            "factor_concentration": factor_res,
             "data_audit": {"status": audit_status}
         }
 
@@ -519,7 +516,6 @@ def main():
         conn.close()
     except Exception as e:
         print(f"❌ [P0-B] 预测日志归档失败: {e}")
-
 
 if __name__ == "__main__":
     main()
