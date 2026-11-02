@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
-"""engines_v3/microstructure_trigger.py - 微观结构扳机（多路径探测版）"""
-import sqlite3
+"""engines_v3/microstructure_trigger.py - 微结构扳机（v5 修正版：修复 RR25 极性）"""
 import pandas as pd
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -11,17 +9,9 @@ BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / 'data'
 
 def _find_csv(filename):
-    """在 data/ 及其子目录中寻找 CSV 文件"""
-    paths = [
-        DATA_DIR / filename,
-        DATA_DIR / 'lti' / filename,
-        DATA_DIR / 'market' / filename,
-        DATA_DIR / 'crypto' / filename,
-        BASE_DIR / filename
-    ]
+    paths = [DATA_DIR / filename, DATA_DIR / 'lti' / filename, BASE_DIR / filename]
     for p in paths:
-        if p.exists():
-            return p
+        if p.exists(): return p
     return None
 
 def compute_microstructure_trigger(asof: str) -> dict:
@@ -29,7 +19,7 @@ def compute_microstructure_trigger(asof: str) -> dict:
     details = {}
     status = 'NORMAL'
 
-    # 1. 期权维度 (Deribit Skew)
+    # 1. 期权维度
     try:
         p_skew = _find_csv('deribit_skew.csv')
         if p_skew:
@@ -42,7 +32,9 @@ def compute_microstructure_trigger(asof: str) -> dict:
                 details['BTC_RR25'] = round(btc_rr25, 4)
                 details['BTC_PCR'] = round(btc_pcr, 3)
                 
-                if btc_rr25 < -0.05:  # 负偏斜
+                # 🆕 修正：RR25 = Put IV - Call IV。
+                # 如果 > 0.05，说明看跌期权（Put）比看涨期权（Call）贵得多，这才是真恐慌！
+                if btc_rr25 > 0.05: 
                     score += 30
                 if btc_pcr > 1.5:
                     score += 20
@@ -51,7 +43,7 @@ def compute_microstructure_trigger(asof: str) -> dict:
     except Exception as e:
         details['Options_Err'] = str(e)[:30]
 
-    # 2. 订单流维度 (Hyperliquid 深度)
+    # 2. 订单流维度
     try:
         p_depth = _find_csv('hyperliquid_depth.csv')
         if p_depth:
@@ -63,12 +55,11 @@ def compute_microstructure_trigger(asof: str) -> dict:
                     imbalance = float(latest.get('bid_ask_imbalance', 0.0))
                     details['HL_BTC_Imbalance'] = round(imbalance, 3)
                     
+                    # 卖压极度沉重才加分
                     if imbalance < -0.3:
                         score += 30
                     elif imbalance < -0.1:
                         score += 15
-        else:
-            details['Depth'] = 'CSV_Not_Found'
     except Exception as e:
         details['Depth_Err'] = str(e)[:30]
 
@@ -83,13 +74,3 @@ def compute_microstructure_trigger(asof: str) -> dict:
         'status': status,
         'details': details
     }
-
-if __name__ == '__main__':
-    asof = datetime.now().strftime('%Y-%m-%d')
-    r = compute_microstructure_trigger(asof)
-    print(f"\n{'='*60}")
-    print(f"  微观结构扳机 - {asof}")
-    print(f"{'='*60}")
-    print(f"  状态: {r['status']} | 评分: {r['score']}/100")
-    print(f"  详情: {r['details']}")
-    print(f"{'='*60}\n")
