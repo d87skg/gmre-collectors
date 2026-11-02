@@ -1,0 +1,129 @@
+# -*- coding: utf-8 -*-
+"""export_local_state.py (SQLite + 数组解析 + Risk Gate 重算)"""
+import json, sqlite3, sys, re
+from pathlib import Path
+from datetime import datetime
+
+BASE = Path(r"D:\HGZC")
+DB = BASE / "data" / "macro.db"
+OUT_DIR = BASE / "reports" / "stagflation_watch_2026Q3" / "shadow_run"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def q1(con, sql, params=()):
+    try:
+        row = con.execute(sql, params).fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        print(f"[warn] {e} :: {sql[:80]}")
+        return None
+
+def parse_stress(detail_str, overall_str):
+    """detail 是 JSON 数组，提取 triggered=true 的 layer"""
+    triggered = []
+    if detail_str:
+        try:
+            arr = json.loads(detail_str) if isinstance(detail_str, str) else detail_str
+            if isinstance(arr, list):
+                for item in arr:
+                    if isinstance(item, dict) and item.get("triggered") is True:
+                        layer = item.get("layer") or item.get("name", "")
+                        if layer:
+                            triggered.append(str(layer))
+        except Exception as e:
+            print(f"[warn] parse stress detail: {e}")
+    if not triggered and overall_str:
+        triggered = re.findall(r"S[0-8]", overall_str)
+    return sorted(set(triggered))
+
+def compute_risk_gate(systemic_confirmed, frag_score, stress_overall):
+    """按 run_v4.py 规则重算 Risk Gate"""
+    if systemic_confirmed:
+        return "BLACK"
+    so = str(stress_overall or "")
+    if frag_score >= 80 or ("FUNDING" in so and "CREDIT" in so):
+        return "RED"
+    if frag_score >= 65 or "+" in so:
+        return "ORANGE"
+    if frag_score >= 50:
+        return "YELLOW"
+    return "GREEN"
+
+def export(date):
+    state = {
+        "date": date, "risk_gate": "", "regime_probs": {},
+        "stress": [], "fragility": {"value": 0, "state": ""},
+        "shock": {}, "defense_count": 0, "transmission": [], "raw": {}
+    }
+    con = sqlite3.connect(str(DB))
+    con.row_factory = sqlite3.Row
+
+    # GMS
+    row = q1(con, "SELECT * FROM gms_regimes WHERE asof_date <= ? ORDER BY asof_date DESC LIMIT 1", (date,))
+    if row:
+        state["raw"]["gms_regimes"] = row
+        rp = row.get("regime_probs")
+        if rp:
+            try:
+                probs = json.loads(rp) if isinstance(rp, str) else rp
+                for k, v in probs.items():
+                    val = float(v)
+                    if val > 1.0: val = val / 100.0
+                    state["regime_probs"][k] = val
+            except Exception as e:
+                print(f"[warn] regime_probs: {e}")
+
+    # Stress
+    row = q1(con, "SELECT * FROM stress_overlay_v2 WHERE asof_date <= ? ORDER BY asof_date DESC LIMIT 1", (date,))
+    if row:
+        state["raw"]["stress_overlay_v2"] = row
+        state["stress"] = parse_stress(row.get("detail"), row.get("overall"))
+        state["raw"]["stress_overall"] = row.get("overall")
+        state["raw"]["systemic_confirmed"] = row.get("systemic_confirmed")
+
+    # Fragility
+    row = q1(con, "SELECT * FROM fragility_engine WHERE asof_date <= ? ORDER BY asof_date DESC LIMIT 1", (date,))
+    if row:
+        state["raw"]["fragility_engine"] = row
+        state["fragility"]["value"] = float(row.get("fragility_score") or 0)
+        state["fragility"]["state"] = str(row.get("level") or "")
+
+    # Shock
+    row = q1(con, "SELECT * FROM shock_engine WHERE asof_date <= ? ORDER BY asof_date DESC LIMIT 1", (date,))
+    if row:
+        state["raw"]["shock_engine"] = row
+        if row.get("primary_shock"):
+            state["shock"][str(row["primary_shock"])] = float(row.get("primary_intensity") or 0)
+        if row.get("secondary_shock"):
+            try:
+                d = json.loads(row.get("detail") or "{}")
+                si = d.get("secondary_intensity") or d.get("secondary", {}).get("intensity")
+                if si is not None:
+                    state["shock"][str(row["secondary_shock"])] = float(si)
+            except Exception:
+                pass
+
+    # Defense
+    row = q1(con, "SELECT * FROM defense_v4 WHERE asof_date <= ? ORDER BY asof_date DESC LIMIT 1", (date,))
+    if row:
+        state["raw"]["defense_v4"] = row
+        state["defense_count"] = int(row.get("triggered_count") or 0)
+
+    # Risk Gate（重算）
+    state["risk_gate"] = compute_risk_gate(
+        state["raw"].get("stress_overlay_v2", {}).get("systemic_confirmed") or 0,
+        state["fragility"]["value"],
+        state["raw"].get("stress_overall") or ""
+    )
+
+    con.close()
+
+    out = OUT_DIR / f"local_{date}.json"
+    out.write_text(json.dumps(state, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    print(f"[export] {out}")
+    print(json.dumps({k: state[k] for k in ["date","risk_gate","regime_probs","stress","fragility","shock","defense_count"]},
+                     ensure_ascii=False, indent=2))
+    return state
+
+if __name__ == "__main__":
+    date = sys.argv[1] if len(sys.argv) > 1 else datetime.now().strftime("%Y-%m-%d")
+    export(date)

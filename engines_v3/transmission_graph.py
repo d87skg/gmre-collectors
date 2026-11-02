@@ -1,14 +1,4 @@
-"""engines_v3/transmission_graph.py - Transmission Graph (VS3)
-追踪 3 条主链的状态：
-  Chain A: Oil → Inflation → Fed → Rates → FCI → Risk Assets
-  Chain B: BOJ → JPY → Carry → Leverage → Forced Selling
-  Chain C: RRP → Buffer → Reserves → Funding → Liquidity
-
-核心升级：
-  1. 引入四态判定：INACTIVE / WATCH / ACTIVE / UNKNOWN。
-  2. 分离“数据缺失”与“未触发”，强制输出数据质量。
-  3. 链级激活度采用“有效边加权平均 × 传导完备度”，避免数据缺失导致假阴性。
-"""
+"""engines_v3/transmission_graph.py - 传导链 A-E"""
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -35,7 +25,6 @@ def _load(conn, sid, limit=60):
 
 
 def _chg(series, window=5):
-    """计算变化率，如果数据不足返回 None 触发 UNKNOWN"""
     if len(series) < window + 1:
         return None
     s = series.dropna()
@@ -50,7 +39,6 @@ def _normalize(val, lo, hi):
 
 
 def edge_status(activation, is_unknown=False):
-    """边的四态：UNKNOWN / INACTIVE / WATCH / ACTIVE"""
     if is_unknown:
         return 'UNKNOWN'
     if activation < 0.15:
@@ -62,11 +50,10 @@ def edge_status(activation, is_unknown=False):
 
 
 def chain_status(activation, unknown_edges, total_edges):
-    """链的四态判定"""
     if unknown_edges == total_edges:
-        return 'UNKNOWN'  # 全盲，无法判定
+        return 'UNKNOWN'
     if unknown_edges > 0 and activation < 0.15:
-        return 'WATCH'    # 数据不全，但当前没爆发，列为观察
+        return 'WATCH'
     if activation < 0.15:
         return 'INACTIVE'
     elif activation < 0.40:
@@ -74,8 +61,6 @@ def chain_status(activation, unknown_edges, total_edges):
     else:
         return 'ACTIVE'
 
-
-# ============ Chain A: Oil → Inflation → Fed → Rates → FCI → Risk ============
 
 def chain_a(conn):
     wti = _load(conn, 'WTI_OIL', 60)
@@ -86,44 +71,42 @@ def chain_a(conn):
     hyg = _load(conn, 'HY_SPREAD', 60)
 
     edges = []
-
-    # Edge 1: Oil → Inflation
     oil_chg = _chg(wti, 5)
     if oil_chg is None:
         edges.append({'edge': 'Oil → Inflation', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+        oil_activation = 0
     else:
         oil_activation = _normalize(oil_chg, 0.0, 0.10) if oil_chg > 0 else 0.0
         edges.append({'edge': 'Oil → Inflation', 'activation': round(oil_activation, 3),
                       'status': edge_status(oil_activation), 'value': f'Oil 5D={oil_chg*100:+.2f}%'})
 
-    # Edge 2: Inflation → Fed
     y2_chg_bp = _chg(y2, 5) * 100 if _chg(y2, 5) is not None else None
     if y2_chg_bp is None:
         edges.append({'edge': 'Inflation → Fed', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+        fed_activation = 0
     else:
         fed_activation = _normalize(abs(y2_chg_bp), 5, 40) if oil_activation > 0.2 else 0.0
         edges.append({'edge': 'Inflation → Fed', 'activation': round(fed_activation, 3),
                       'status': edge_status(fed_activation), 'value': f'2Y 5D={y2_chg_bp:+.1f}bp'})
 
-    # Edge 3: Fed → 10Y
     y10_chg_bp = _chg(y10, 5) * 100 if _chg(y10, 5) is not None else None
     if y10_chg_bp is None:
         edges.append({'edge': 'Fed → 10Y', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+        y10_activation = 0
     else:
         y10_activation = _normalize(abs(y10_chg_bp), 5, 30) if fed_activation > 0.2 else 0.0
         edges.append({'edge': 'Fed → 10Y', 'activation': round(y10_activation, 3),
                       'status': edge_status(y10_activation), 'value': f'10Y 5D={y10_chg_bp:+.1f}bp'})
 
-    # Edge 4: 10Y → FCI
     vix_chg = _chg(vix, 5)
     if vix_chg is None:
         edges.append({'edge': 'Rates → FCI', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+        fci_activation = 0
     else:
         fci_activation = _normalize(vix_chg, 0.0, 0.15) if y10_activation > 0.2 else 0.0
         edges.append({'edge': 'Rates → FCI', 'activation': round(fci_activation, 3),
                       'status': edge_status(fci_activation), 'value': f'VIX 5D={vix_chg*100:+.2f}%'})
 
-    # Edge 5: FCI → Credit
     hyg_chg = _chg(hyg, 5)
     if hyg_chg is None:
         edges.append({'edge': 'FCI → Credit', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
@@ -135,48 +118,43 @@ def chain_a(conn):
     return edges
 
 
-# ============ Chain B: BOJ → JPY → Carry → Leverage → Forced Selling ============
-
 def chain_b(conn):
     jp10y = _load(conn, 'JP_10Y_YIELD', 60)
     usdjpy = _load(conn, 'USD_JPY', 60)
     vix = _load(conn, 'VIX', 60)
-    nasdaq = _load(conn, 'SP500', 60)
+    spx = _load(conn, 'SP500', 60)
 
     edges = []
-
-    # Edge 1: BOJ → JPY
     jp10y_chg = _chg(jp10y, 20)
     if jp10y_chg is None:
         edges.append({'edge': 'BOJ → JPY', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+        jpy_activation = 0
     else:
         jpy_activation = _normalize(jp10y_chg, 0.0, 0.15) if jp10y_chg > 0 else 0.0
         edges.append({'edge': 'BOJ → JPY', 'activation': round(jpy_activation, 3),
                       'status': edge_status(jpy_activation), 'value': f'JP10Y 20D={jp10y_chg*100:+.2f}%'})
 
-    # Edge 2: JPY → Carry
     usdjpy_chg = _chg(usdjpy, 5)
     if usdjpy_chg is None:
         edges.append({'edge': 'JPY → Carry', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+        carry_activation = 0
     else:
         carry_activation = _normalize(-usdjpy_chg, 0.0, 0.05) if usdjpy_chg < 0 else 0.0
         edges.append({'edge': 'JPY → Carry', 'activation': round(carry_activation, 3),
                       'status': edge_status(carry_activation), 'value': f'USDJPY 5D={usdjpy_chg*100:+.2f}%'})
 
-    # Edge 3: Carry → Leverage
     vix_chg = _chg(vix, 5)
     if vix_chg is None:
         edges.append({'edge': 'Carry → Leverage', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+        leverage_activation = 0
     else:
         leverage_activation = _normalize(vix_chg, 0.0, 0.20) if carry_activation > 0.2 else 0.0
         edges.append({'edge': 'Carry → Leverage', 'activation': round(leverage_activation, 3),
                       'status': edge_status(leverage_activation), 'value': f'VIX 5D={vix_chg*100:+.2f}%'})
 
-    # Edge 4: Leverage → Forced Selling
     try:
         df = pd.read_sql_query(
-            "SELECT avg_corr_20d FROM contagion_engine ORDER BY asof_date DESC LIMIT 1",
-            conn
+            "SELECT avg_corr_20d FROM contagion_engine ORDER BY asof_date DESC LIMIT 1", conn
         )
         if not df.empty:
             corr = float(df.iloc[0]['avg_corr_20d'])
@@ -191,8 +169,6 @@ def chain_b(conn):
     return edges
 
 
-# ============ Chain C: RRP → Buffer → Reserves → Funding → Liquidity ============
-
 def chain_c(conn):
     rrp = _load(conn, 'RRP_BALANCE', 60)
     res = _load(conn, 'RESERVE_BALANCE', 60)
@@ -201,8 +177,6 @@ def chain_c(conn):
     vix = _load(conn, 'VIX', 60)
 
     edges = []
-
-    # Edge 1: RRP → Buffer
     if len(rrp) >= 1:
         rrp_now = float(rrp.iloc[-1])
         buffer_activation = _normalize(500 - rrp_now, 0, 500) if rrp_now < 500 else 0.0
@@ -211,7 +185,6 @@ def chain_c(conn):
     else:
         edges.append({'edge': 'RRP → Buffer', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
 
-    # Edge 2: Buffer → Reserves
     if len(res) >= 5:
         r_chg = _chg(res, 4)
         if r_chg is None:
@@ -223,7 +196,6 @@ def chain_c(conn):
     else:
         edges.append({'edge': 'Buffer → Reserves', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
 
-    # Edge 3: Reserves → Funding
     if len(sofr) >= 1 and len(effr) >= 1:
         spread = (float(sofr.ffill().iloc[-1]) - float(effr.ffill().iloc[-1])) * 100
         funding_activation = _normalize(spread, 0, 10) if spread > 0 else 0.0
@@ -232,7 +204,6 @@ def chain_c(conn):
     else:
         edges.append({'edge': 'Reserves → Funding', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
 
-    # Edge 4: Funding → Market Liquidity
     vix_chg = _chg(vix, 5)
     if vix_chg is None:
         edges.append({'edge': 'Funding → Market Liquidity', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
@@ -244,31 +215,140 @@ def chain_c(conn):
     return edges
 
 
-# ============ 主入口 ============
+def chain_d(conn):
+    """🆕 Chain D: AI 算力 → 税收 → 财政 → 美债流动性"""
+    ndx = _load(conn, 'NDX', 60)
+    hy_ccc = _load(conn, 'BAMLH0A3HYC', 60)
+    tga = _load(conn, 'TGA_BALANCE', 60)
+    y30 = _load(conn, 'YC30Y', 60)
+    y10 = _load(conn, 'YC10Y', 60)
+
+    edges = []
+    # Edge 1: AI Credit → NDX
+    if len(hy_ccc) >= 5 and len(ndx) >= 5:
+        spread_chg = _chg(hy_ccc, 5)
+        if spread_chg is not None:
+            activation = _normalize(spread_chg, 0.0, 0.10) if spread_chg > 0 else 0.0
+            edges.append({'edge': 'AI Credit → NDX', 'activation': round(activation, 3),
+                          'status': edge_status(activation), 'value': f'HY CCC 5D={spread_chg*100:+.2f}%'})
+        else:
+            edges.append({'edge': 'AI Credit → NDX', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+    else:
+        edges.append({'edge': 'AI Credit → NDX', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+
+    # Edge 2: NDX → Tax Revenue（用 NDX 下跌代理税收减少）
+    if len(ndx) >= 5:
+        ndx_chg = _chg(ndx, 5)
+        if ndx_chg is not None:
+            tax_activation = _normalize(-ndx_chg, 0.0, 0.10) if ndx_chg < 0 else 0.0
+            edges.append({'edge': 'NDX → Tax', 'activation': round(tax_activation, 3),
+                          'status': edge_status(tax_activation), 'value': f'NDX 5D={ndx_chg*100:+.2f}%'})
+        else:
+            edges.append({'edge': 'NDX → Tax', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+    else:
+        edges.append({'edge': 'NDX → Tax', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+
+    # Edge 3: Tax → Fiscal（用 TGA 下降代理财政恶化）
+    if len(tga) >= 5:
+        tga_chg = _chg(tga, 5)
+        if tga_chg is not None:
+            fis_activation = _normalize(-tga_chg, 0.0, 0.05) if tga_chg < 0 else 0.0
+            edges.append({'edge': 'Tax → Fiscal', 'activation': round(fis_activation, 3),
+                          'status': edge_status(fis_activation), 'value': f'TGA 5D={tga_chg*100:+.2f}%'})
+        else:
+            edges.append({'edge': 'Tax → Fiscal', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+    else:
+        edges.append({'edge': 'Tax → Fiscal', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+
+    # Edge 4: Fiscal → Term Premium
+    if len(y30) >= 1 and len(y10) >= 1:
+        term_premium = float(y30.iloc[-1]) - float(y10.iloc[-1])
+        tp_activation = _normalize(term_premium, 0.0, 0.5) if term_premium > 0 else 0.0
+        edges.append({'edge': 'Fiscal → Term Premium', 'activation': round(tp_activation, 3),
+                      'status': edge_status(tp_activation), 'value': f'30Y-10Y={term_premium*100:.1f}bp'})
+    else:
+        edges.append({'edge': 'Fiscal → Term Premium', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+
+    return edges
+
+
+def chain_e(conn):
+    """🆕 Chain E: 美元 → 石油 → 黄金 → 美债（美元中心链）"""
+    dxy = _load(conn, 'DXY_PROXY', 60)
+    wti = _load(conn, 'WTI_OIL', 60)
+    gold = _load(conn, 'GOLD_PRICE', 60)
+    y10 = _load(conn, 'YC10Y', 60)
+
+    edges = []
+    dxy_chg = _chg(dxy, 5)
+
+    # Edge 1: USD → Oil（反向）
+    if dxy_chg is not None and len(wti) >= 5:
+        oil_activation = _normalize(-dxy_chg, 0.0, 0.03) if dxy_chg < 0 else 0.0
+        edges.append({'edge': 'USD → Oil (反向)', 'activation': round(oil_activation, 3),
+                      'status': edge_status(oil_activation), 'value': f'DXY 5D={dxy_chg*100:+.2f}%'})
+    else:
+        edges.append({'edge': 'USD → Oil (反向)', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+
+    # Edge 2: USD → Gold（反向）
+    if dxy_chg is not None and len(gold) >= 5:
+        gold_activation = _normalize(-dxy_chg, 0.0, 0.03) if dxy_chg < 0 else 0.0
+        edges.append({'edge': 'USD → Gold (反向)', 'activation': round(gold_activation, 3),
+                      'status': edge_status(gold_activation), 'value': f'DXY 5D={dxy_chg*100:+.2f}%'})
+    else:
+        edges.append({'edge': 'USD → Gold (反向)', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+
+    # Edge 3: Oil → Bond（石油美元回流反向）
+    if len(wti) >= 5 and len(y10) >= 5:
+        wti_chg = _chg(wti, 5)
+        if wti_chg is not None:
+            bond_activation = _normalize(wti_chg, 0.0, 0.10) if wti_chg > 0 else 0.0
+            edges.append({'edge': 'Oil → Bond (回流反向)', 'activation': round(bond_activation, 3),
+                          'status': edge_status(bond_activation), 'value': f'WTI 5D={wti_chg*100:+.2f}%'})
+        else:
+            edges.append({'edge': 'Oil → Bond (回流反向)', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+    else:
+        edges.append({'edge': 'Oil → Bond (回流反向)', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+
+    # Edge 4: Gold↑ + Bond↓（信用背离）
+    if len(gold) >= 5 and len(y10) >= 5:
+        gold_chg = _chg(gold, 5)
+        y10_chg = _chg(y10, 5)
+        if gold_chg is not None and y10_chg is not None:
+            divergence = gold_chg - (-y10_chg)
+            credit_activation = _normalize(divergence, 0.0, 0.05) if divergence > 0 else 0.0
+            edges.append({'edge': 'Gold↑ + Bond↓ (信用背离)', 'activation': round(credit_activation, 3),
+                          'status': edge_status(credit_activation),
+                          'value': f'金 5D={gold_chg*100:+.2f}%, 10Y 5D={y10_chg*100:+.2f}%'})
+        else:
+            edges.append({'edge': 'Gold↑ + Bond↓ (信用背离)', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+    else:
+        edges.append({'edge': 'Gold↑ + Bond↓ (信用背离)', 'activation': 0.0, 'status': 'UNKNOWN', 'value': 'N/A'})
+
+    return edges
+
 
 CHAINS = [
     ('Chain A: Oil → Inflation → Fed → Rates → Risk', chain_a),
     ('Chain B: BOJ → JPY → Carry → Leverage → Selling', chain_b),
     ('Chain C: RRP → Buffer → Reserves → Funding → Liquidity', chain_c),
+    ('Chain D: AI Credit → Tax → Fiscal → Term Premium', chain_d),
+    ('Chain E: USD → Oil → Gold → Bond', chain_e),
 ]
 
 
 def compute_transmission(asof: str) -> dict:
     conn = sqlite3.connect(DB_PATH)
     result = {'asof': asof, 'chains': []}
-
     try:
         for chain_name, fn in CHAINS:
             try:
                 edges = fn(conn)
-
-                # 统计各状态数量
                 unknown_edges = sum(1 for e in edges if e['status'] == 'UNKNOWN')
                 valid_edges = [e for e in edges if e['status'] != 'UNKNOWN']
                 n_valid = len(valid_edges)
                 n_total = len(edges)
 
-                # 计算有效边加权平均（剔除 UNKNOWN 避免假阴性）
                 if n_valid > 0:
                     weighted_avg = sum(e['activation'] for e in valid_edges) / n_valid
                     active_count = sum(1 for e in valid_edges if e['activation'] > 0.15)
@@ -277,7 +357,6 @@ def compute_transmission(asof: str) -> dict:
                     weighted_avg = 0.0
                     completeness = 0.0
 
-                # 链级激活度
                 chain_activation = weighted_avg * completeness
                 c_status = chain_status(chain_activation, unknown_edges, n_total)
 
@@ -299,7 +378,6 @@ def compute_transmission(asof: str) -> dict:
     finally:
         conn.close()
 
-    # 落盘
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""CREATE TABLE IF NOT EXISTS transmission_graph (
         asof_date TEXT PRIMARY KEY, detail TEXT)""")
@@ -308,32 +386,6 @@ def compute_transmission(asof: str) -> dict:
         (asof, json.dumps(result['chains'])))
     conn.commit()
     conn.close()
-
-    # 打印详情
-    print(f"\n{'='*72}")
-    print(f"  Transmission Graph - {asof}")
-    print(f"{'='*72}\n")
-
-    for chain in result['chains']:
-        icon = {
-            'INACTIVE': '⚪', 'WATCH': '🟡', 'ACTIVE': '🚨', 'UNKNOWN': '❓'
-        }.get(chain['status'], '?')
-        
-        print(f"  {icon} {chain['name']}")
-        print(f"      状态: {chain['status']} | 激活度: {chain['activation']:.3f} | "
-              f"完备度: {chain.get('active_edges', '0/0')} | 盲区边数: {chain.get('unknown_edges', 0)}")
-        
-        if 'weighted_avg' in chain:
-            print(f"      有效边加权均值: {chain['weighted_avg']:.3f}")
-            
-        for e in chain['edges']:
-            sub_icon = {
-                'INACTIVE': '  ·', 'WATCH': '  🟡', 'ACTIVE': '  🚨', 'UNKNOWN': '  ❓'
-            }.get(e['status'], '  ?')
-            print(f"{sub_icon} {e['edge']:35s} A={e['activation']:.2f} | {e['value']}")
-        print()
-
-    print(f"{'='*72}\n")
     return result
 
 

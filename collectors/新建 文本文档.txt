@@ -1,0 +1,34 @@
+import requests
+import sqlite3
+import pandas as pd
+import datetime
+
+def fetch_coincap():
+    # CoinCap 提供小时级历史数据，通常国内可直连
+    url = "https://api.coincap.io/v2/assets/bitcoin/history?interval=h1"
+    try:
+        response = requests.get(url, timeout=15)
+        data = response.json()['data']
+        if not data:
+            return
+        df = pd.DataFrame(data)
+        df['datetime'] = pd.to_datetime(df['time'], unit='ms')
+        df['slug'] = 'bitcoin'
+        df['close'] = pd.to_numeric(df['priceUsd'])
+        # 将 open, high, low, volume 置为 NaN 或缺失，因为 CoinCap 只有价格
+        df['open'] = df['close']
+        df['high'] = df['close']
+        df['low'] = df['close']
+        df['volume'] = 0
+        
+        conn = sqlite3.connect('data/macro.db')
+        df[['datetime', 'slug', 'open', 'high', 'low', 'close', 'volume']].to_sql(
+            'asset_prices_1h', conn, if_exists='append', index=False
+        )
+        conn.close()
+        print(f"✅ CoinCap 小时级数据已入库，共 {len(df)} 条")
+    except Exception as e:
+        print(f"CoinCap 抓取失败（你的系统将正常使用日频回退）: {e}")
+
+if __name__ == "__main__":
+    fetch_coincap()

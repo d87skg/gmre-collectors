@@ -1,0 +1,112 @@
+# ============================================================
+# GLOBAL MACRO DATA OS — sources registry
+# layer: policy | macro | market | crypto | onchain
+# ============================================================
+sources:
+  fred:
+    name: FRED
+    layer: macro
+    base_url: https://api.stlouisfed.org/fred
+    api_type: rest
+    requires_key: true
+    license_note: FRED terms of use; supports vintage/ALFRED real-time periods
+    enabled: true
+
+  treasury:
+    name: US Treasury FiscalData
+    layer: policy
+    base_url: https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1
+    api_type: rest
+    requires_key: false
+    license_note: Public US government data
+    enabled: true
+
+  ecb:
+    name: ECB Data Portal (SDMX)
+    layer: macro
+    base_url: https://data-api.ecb.europa.eu/service/data
+    api_type: sdmx
+    requires_key: false
+    license_note: Free reuse with attribution
+    enabled: true
+
+  bis:
+    name: BIS Statistics (SDMX REST)
+    layer: macro
+    base_url: https://stats.bis.org/api/v2/data
+    api_type: sdmx
+    requires_key: false
+    license_note: Free for research
+    enabled: true
+
+  imf:
+    name: IMF SDMX (IFS)
+    layer: macro
+    base_url: https://sdmxcentral.imf.org/ws/public/sdmxapi/rest
+    api_type: sdmx
+    requires_key: false
+    license_note: Free for research
+    enabled: true
+
+  worldbank:
+    name: World Bank API
+    layer: macro
+    base_url: https://api.worldbank.org/v2
+    api_type: rest
+    requires_key: false
+    license_note: CC BY 4.0
+    enabled: true
+
+  market:
+    name: Market data (US Treasury yields / CBOE VIX / Frankfurter DXY / gold-api)
+    layer: market
+    base_url: https://home.treasury.gov; https://cdn.cboe.com; https://api.frankfurter.app; https://api.gold-api.com
+    api_type: rest
+    requires_key: false
+    license_note: Official public data (Treasury/CBOE) + public APIs; informational only
+    enabled: true
+
+  sec:
+    name: SEC EDGAR
+    layer: market
+    base_url: https://data.sec.gov
+    api_type: rest
+    requires_key: false
+    license_note: No key required; must provide identifying User-Agent; fair access rules
+    enabled: true
+
+  alphavantage:
+    name: Alpha Vantage
+    layer: market
+    base_url: https://www.alphavantage.co/query
+    api_type: rest
+    requires_key: true
+    license_note: Free tier 25 requests/day unless verified open-source/educational
+    enabled: true
+
+  coingecko:
+    name: CoinGecko
+    layer: crypto
+    base_url: https://api.coingecko.com/api/v3
+    api_type: rest
+    requires_key: false
+    license_note: Demo tier ~10k calls/month, 100/min; keyless for low-freq prototyping
+    enabled: true
+
+  defillama:
+    name: DeFiLlama
+    layer: onchain
+    base_url: https://api.llama.fi
+    api_type: rest
+    requires_key: false
+    license_note: Open data
+    enabled: true
+
+  dune:
+    name: Dune Analytics
+    layer: onchain
+    base_url: https://api.dune.com/api/v1
+    api_type: rest
+    requires_key: true
+    license_note: Saved-query based; API key required
+    enabled: true

@@ -1,0 +1,431 @@
+//@version=6
+// =============================================================================
+// GMRE-TV 1.0 — Market Confirmation Engine
+// =============================================================================
+// 定位: TradingView 市场确认层
+// 职责: 判断市场是否正在确认 GMRE 的宏观状态
+// 
+// 架构:
+//   GMRE Python  →  R0-R6 / S0-S8 / F0-F5  (宏观真相)
+//   GMRE-TV Pine →  M0-M4 + Market Risk Gate (市场确认)
+//
+// 原则:
+//   1. 绝不输出 R0-R6 (那是 Python 的职责)
+//   2. GMRE Context 由人类手动输入
+//   3. Market State 由 Pine 实时计算
+// =============================================================================
+
+indicator("GMRE-TV 1.0 Market Confirmation Engine", shorttitle="GMRE-TV", overlay=false, precision=2)
+
+// =============================================================================
+// 0. 输入参数
+// =============================================================================
+
+string G_CTX = "=== 1. GMRE Context (人工输入) ==="
+i_gmre_regime = input.string("R4", "GMRE Regime", options=["R0","R1","R2","R3","R4","R5","R6"], group=G_CTX, tooltip="来自 Python 日报")
+i_gmre_stress = input.string("S4", "GMRE Stress", options=["S0","S1","S2","S3","S4","S5","S6","S7","S8"], group=G_CTX)
+i_gmre_frag   = input.string("F3", "GMRE Fragility", options=["F0","F1","F2","F3","F4","F5"], group=G_CTX)
+i_gmre_shock  = input.string("POLICY", "GMRE Shock", options=["NONE","SUPPLY","POLICY","FISCAL","FINANCIAL","DEMAND","LIQUIDITY","GEOPOLITICAL"], group=G_CTX)
+i_gmre_chain  = input.string("ChainB", "Active Chain", options=["NONE","ChainA","ChainB","ChainC"], group=G_CTX)
+
+string G_SYM = "=== 2. 跨资产符号 ==="
+s_us10y = input.symbol("TVC:US10Y", "10Y Treasury", group=G_SYM)
+s_us02y = input.symbol("TVC:US02Y", "2Y Treasury", group=G_SYM)
+s_us30y = input.symbol("TVC:US30Y", "30Y Treasury", group=G_SYM)
+s_dxy   = input.symbol("CAPITALCOM:DXY", "Dollar Index", group=G_SYM)
+s_move  = input.symbol("TVC:MOVE", "MOVE Index", group=G_SYM)
+s_vix   = input.symbol("TVC:VIX", "VIX", group=G_SYM)
+s_hyg   = input.symbol("AMEX:HYG", "HYG (High Yield)", group=G_SYM)
+s_lqd   = input.symbol("AMEX:LQD", "LQD (IG)", group=G_SYM)
+s_jpy   = input.symbol("TVC:USDJPY", "USDJPY", group=G_SYM)
+
+string G_CALC = "=== 3. 计算参数 ==="
+i_lookback = input.int(20, "Lookback", minval=5, maxval=100, group=G_CALC)
+i_z_window = input.int(252, "Z-Score Window", minval=20, maxval=756, group=G_CALC)
+
+string G_UI = "=== 4. 面板控制 ==="
+i_show_panel = input.bool(true, "显示面板", group=G_UI)
+i_panel_pos  = input.string("Top Right", "面板位置", options=["Top Right","Bottom Right","Top Left","Bottom Left"], group=G_UI)
+
+// =============================================================================
+// 1. 数据采集
+// =============================================================================
+
+f_sec(sym) =>
+    request.security(sym, "D", close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+f_sec_safe(sym, fallback) =>
+    v = f_sec(sym)
+    nz(v, fallback)
+
+f_us10y = f_sec_safe(s_us10y, 4.5)
+f_us02y = f_sec_safe(s_us02y, 4.5)
+f_us30y = f_sec_safe(s_us30y, 4.5)
+f_dxy   = f_sec_safe(s_dxy, 100.0)
+f_move  = f_sec_safe(s_move, 100.0)
+f_vix   = f_sec_safe(s_vix, 20.0)
+f_hyg   = f_sec_safe(s_hyg, 75.0)
+f_lqd   = f_sec_safe(s_lqd, 110.0)
+f_jpy   = f_sec_safe(s_jpy, 150.0)
+
+// =============================================================================
+// 2. 工具函数
+// =============================================================================
+
+f_zscore(src, win) =>
+    m = ta.sma(src, win)
+    s = ta.stdev(src, win)
+    s != 0 ? (src - m) / s : 0.0
+
+f_z_to_score(z) =>
+    math.min(math.max((z + 3.0) / 6.0 * 100.0, 0.0), 100.0)
+
+f_clamp(v, lo, hi) =>
+    math.min(math.max(v, lo), hi)
+
+f_chg_bp(src, periods) =>
+    (src - src[periods]) * 100.0
+
+f_chg_pct(src, periods) =>
+    src[periods] != 0 ? (src - src[periods]) / src[periods] * 100.0 : 0.0
+
+// =============================================================================
+// 3. E1 — Rates Shock
+// =============================================================================
+
+f_e1_rates() =>
+    // 变化率
+    d2y_1d = f_chg_bp(f_us02y, 1)
+    d2y_5d = f_chg_bp(f_us02y, 5)
+    d10y_5d = f_chg_bp(f_us10y, 5)
+    d30y_5d = f_chg_bp(f_us30y, 5)
+    
+    // 曲线
+    curve_2s10 = (f_us10y - f_us02y) * 100.0
+    
+    // 波动率
+    vol_10y = ta.stdev(f_us10y, 20) * 100.0
+    
+    // 打分 (0-100)
+    s_2y = math.min(math.abs(d2y_5d) / 40.0 * 100.0, 100.0)
+    s_10y = math.min(math.abs(d10y_5d) / 30.0 * 100.0, 100.0)
+    s_30y = math.min(math.abs(d30y_5d) / 30.0 * 100.0, 100.0)
+    s_vol = math.min(vol_10y / 15.0 * 100.0, 100.0)
+    
+    score = f_clamp(0.35 * s_2y + 0.30 * s_10y + 0.15 * s_30y + 0.20 * s_vol, 0.0, 100.0)
+    
+    // 状态
+    state = score < 30 ? "CALM" :
+            score < 50 ? "TIGHTENING" :
+            score < 70 ? "SHOCK" : "BREAK"
+    
+    [score, state, d2y_5d, d10y_5d, curve_2s10]
+
+[e1_score, e1_state, e1_d2y5d, e1_d10y5d, e1_curve] = f_e1_rates()
+
+// =============================================================================
+// 4. E2 — Dollar / Liquidity Pressure
+// =============================================================================
+
+f_e2_dollar() =>
+    // DXY 变化
+    dxy_5d = f_chg_pct(f_dxy, 5)
+    
+    // MOVE 水平 (基准 100)
+    move_score = math.min(math.abs(f_move - 100.0) / 50.0 * 100.0, 100.0)
+    
+    // VIX 水平 (基准 20)
+    vix_score = math.min(math.abs(f_vix - 20.0) / 30.0 * 100.0, 100.0)
+    
+    // DXY 打分
+    dxy_score = math.min(math.abs(dxy_5d) / 3.0 * 100.0, 100.0)
+    
+    score = f_clamp(0.40 * dxy_score + 0.30 * move_score + 0.30 * vix_score, 0.0, 100.0)
+    
+    state = score < 30 ? "GREEN" :
+            score < 50 ? "NORMAL" :
+            score < 70 ? "WARNING" :
+            score < 85 ? "STRESS" : "CRISIS"
+    
+    [score, state, dxy_5d, f_move, f_vix]
+
+[e2_score, e2_state, e2_dxy5d, e2_move, e2_vix] = f_e2_dollar()
+
+// =============================================================================
+// 5. E3 — Carry Stress
+// =============================================================================
+
+f_e3_carry() =>
+    // JPY 升值速度
+    jpy_5d = f_chg_pct(f_jpy, 5)
+    
+    // 美日利差压缩 (10Y - JGB proxy)
+    // JGB 用 US10Y - 2.0 作为粗略代理
+    jgb_proxy = f_us10y - 2.5
+    spread = (f_us10y - jgb_proxy) * 100.0
+    spread_20d_chg = spread - spread[20]
+    
+    // VIX 扩张
+    vix_20d_chg = f_vix - f_vix[20]
+    
+    // 打分
+    jpy_score = jpy_5d < 0 ? math.min(math.abs(jpy_5d) / 5.0 * 100.0, 100.0) : 0.0
+    spread_score = spread_20d_chg < 0 ? math.min(math.abs(spread_20d_chg) / 30.0 * 100.0, 100.0) : 0.0
+    vix_score = vix_20d_chg > 0 ? math.min(vix_20d_chg / 15.0 * 100.0, 100.0) : 0.0
+    
+    score = f_clamp(0.40 * jpy_score + 0.30 * spread_score + 0.30 * vix_score, 0.0, 100.0)
+    
+    state = score < 30 ? "NORMAL" :
+            score < 55 ? "WARNING" :
+            score < 80 ? "UNWIND" : "PANIC"
+    
+    [score, state, jpy_5d, spread, vix_20d_chg]
+
+[e3_score, e3_state, e3_jpy5d, e3_spread, e3_vix20d] = f_e3_carry()
+
+// =============================================================================
+// 6. E4 — Credit Stress
+// =============================================================================
+
+f_e4_credit() =>
+    // HYG/LQD 比率
+    ratio = f_hyg / math.max(f_lqd, 1.0)
+    ratio_5d = f_chg_pct(ratio, 5)
+    ratio_20d = f_chg_pct(ratio, 20)
+    
+    // HYG 单独
+    hyg_5d = f_chg_pct(f_hyg, 5)
+    
+    // 打分
+    ratio_score = ratio_5d < 0 ? math.min(math.abs(ratio_5d) / 3.0 * 100.0, 100.0) : 0.0
+    ratio_20d_score = ratio_20d < 0 ? math.min(math.abs(ratio_20d) / 8.0 * 100.0, 100.0) : 0.0
+    hyg_score = hyg_5d < 0 ? math.min(math.abs(hyg_5d) / 3.0 * 100.0, 100.0) : 0.0
+    
+    score = f_clamp(0.40 * ratio_score + 0.30 * ratio_20d_score + 0.30 * hyg_score, 0.0, 100.0)
+    
+    state = score < 25 ? "NORMAL" :
+            score < 50 ? "DETERIORATING" :
+            score < 75 ? "STRESS" : "BREAK"
+    
+    [score, state, ratio_5d, ratio_20d]
+
+[e4_score, e4_state, e4_ratio5d, e4_ratio20d] = f_e4_credit()
+
+// =============================================================================
+// 7. E5 — Volatility
+// =============================================================================
+
+f_e5_vol() =>
+    // VIX 水平 + MOVE 水平
+    vix_score = math.min(math.max((f_vix - 15.0) / 35.0 * 100.0, 0.0), 100.0)
+    move_score = math.min(math.max((f_move - 80.0) / 80.0 * 100.0, 0.0), 100.0)
+    
+    // VIX 20日变化
+    vix_chg = f_vix - f_vix[20]
+    vix_chg_score = vix_chg > 0 ? math.min(vix_chg / 15.0 * 100.0, 100.0) : 0.0
+    
+    score = f_clamp(0.35 * vix_score + 0.35 * move_score + 0.30 * vix_chg_score, 0.0, 100.0)
+    
+    state = score < 30 ? "LOW" :
+            score < 50 ? "NORMAL" :
+            score < 70 ? "ELEVATED" :
+            score < 85 ? "STRESS" : "PANIC"
+    
+    [score, state]
+
+[e5_score, e5_state] = f_e5_vol()
+
+// =============================================================================
+// 8. E6 — Cross-Asset Risk Gate
+// =============================================================================
+
+f_e6_risk_gate() =>
+    // 加权组合
+    market_risk = 0.25 * e1_score + 0.20 * e2_score + 0.20 * e3_score + 0.20 * e4_score + 0.15 * e5_score
+    score = f_clamp(market_risk, 0.0, 100.0)
+    
+    // Gate 分档
+    gate = score < 30 ? "GREEN" :
+           score < 50 ? "YELLOW" :
+           score < 70 ? "ORANGE" :
+           score < 85 ? "RED" : "BLACK"
+    
+    // Market State (M0-M4)
+    m_state = score < 25 ? "M0" :
+              score < 45 ? "M1" :
+              score < 65 ? "M2" :
+              score < 85 ? "M3" : "M4"
+    
+    m_state_name = m_state == "M0" ? "MARKET CALM" :
+                   m_state == "M1" ? "MARKET WARNING" :
+                   m_state == "M2" ? "MARKET STRESS" :
+                   m_state == "M3" ? "MARKET BREAK" : "MARKET CRISIS"
+    
+    [score, gate, m_state, m_state_name]
+
+[e6_score, e6_gate, m_state, m_state_name] = f_e6_risk_gate()
+
+// =============================================================================
+// 9. Confirmation Matrix (GMRE Context × Pine Market State)
+// =============================================================================
+
+f_confirmation_status() =>
+    // 从 GMRE Context 输入中提取数字
+    gmre_num = str.tonumber(str.substring(i_gmre_regime, 1))
+    m_num = str.tonumber(str.substring(m_state, 1))
+    
+    // 确认度判定
+    // 完全确认: GMRE 高 + Pine 高
+    // 部分确认: 一个高一个低
+    // 未确认: GMRE 高 Pine 低
+    
+    gmre_high = gmre_num >= 3
+    m_high = m_num >= 2
+    
+    status = gmre_high and m_high ? "CONFIRMED" :
+             gmre_high and not m_high ? "PARTIAL (Waiting Market)" :
+             not gmre_high and m_high ? "DIVERGENT (Market Ahead)" :
+             "CALM"
+    
+    status
+
+conf_status = f_confirmation_status()
+
+// =============================================================================
+// 10. 图表绘制
+// =============================================================================
+
+plot(e6_score, "Market Risk Score", color=color.orange, linewidth=3)
+plot(e1_score, "E1 Rates", color=color.new(color.red, 60), linewidth=1)
+plot(e2_score, "E2 Dollar", color=color.new(color.blue, 60), linewidth=1)
+plot(e3_score, "E3 Carry", color=color.new(color.purple, 60), linewidth=1)
+plot(e4_score, "E4 Credit", color=color.new(color.teal, 60), linewidth=1)
+plot(e5_score, "E5 Volatility", color=color.new(color.gray, 60), linewidth=1)
+
+hline(30, "Green/Yellow", color=color.green, linestyle=hline.style_dotted)
+hline(50, "Yellow/Orange", color=color.yellow, linestyle=hline.style_dashed)
+hline(70, "Orange/Red", color=color.orange, linestyle=hline.style_dashed)
+hline(85, "Red/Black", color=color.red, linestyle=hline.style_solid)
+
+// =============================================================================
+// 11. 面板
+// =============================================================================
+
+f_get_pos(p) =>
+    p == "Top Right" ? position.top_right :
+     p == "Bottom Right" ? position.bottom_right :
+     p == "Top Left" ? position.top_left : position.bottom_left
+
+var table panel = table.new(position.top_right, 2, 22, bgcolor=color.new(#0c0d10, 10), border_color=color.gray, border_width=1)
+
+if i_show_panel and barstate.islast
+    table.set_position(panel, f_get_pos(i_panel_pos))
+    
+    // 标题
+    table.cell(panel, 0, 0, "GMRE-TV 1.0", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(panel, 1, 0, "MARKET CONFIRM", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    
+    // GMRE Context
+    table.cell(panel, 0, 1, "【GMRE Context】", text_color=color.yellow, text_size=size.small)
+    table.cell(panel, 1, 1, "(Manual Input)", text_color=color.gray, text_size=size.small)
+    
+    table.cell(panel, 0, 2, "Regime", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 2, i_gmre_regime, text_color=color.yellow, text_size=size.small)
+    
+    table.cell(panel, 0, 3, "Stress", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 3, i_gmre_stress, text_color=color.orange, text_size=size.small)
+    
+    table.cell(panel, 0, 4, "Fragility", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 4, i_gmre_frag, text_color=color.red, text_size=size.small)
+    
+    table.cell(panel, 0, 5, "Shock", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 5, i_gmre_shock, text_color=color.orange, text_size=size.small)
+    
+    table.cell(panel, 0, 6, "Chain", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 6, i_gmre_chain, text_color=color.aqua, text_size=size.small)
+    
+    // Market Confirmation
+    table.cell(panel, 0, 7, "【Market Confirm】", text_color=color.yellow, text_size=size.small)
+    table.cell(panel, 1, 7, "(Pine Live)", text_color=color.gray, text_size=size.small)
+    
+    // E1-E6
+    e1_c = e1_score > 70 ? color.red : e1_score > 50 ? color.orange : color.gray
+    e2_c = e2_score > 70 ? color.red : e2_score > 50 ? color.orange : color.gray
+    e3_c = e3_score > 70 ? color.red : e3_score > 50 ? color.orange : color.gray
+    e4_c = e4_score > 70 ? color.red : e4_score > 50 ? color.orange : color.gray
+    e5_c = e5_score > 70 ? color.red : e5_score > 50 ? color.orange : color.gray
+    
+    table.cell(panel, 0, 8, "E1 Rates", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 8, str.tostring(e1_score, "#.#") + " " + e1_state, text_color=e1_c, text_size=size.small)
+    
+    table.cell(panel, 0, 9, "E2 Dollar", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 9, str.tostring(e2_score, "#.#") + " " + e2_state, text_color=e2_c, text_size=size.small)
+    
+    table.cell(panel, 0, 10, "E3 Carry", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 10, str.tostring(e3_score, "#.#") + " " + e3_state, text_color=e3_c, text_size=size.small)
+    
+    table.cell(panel, 0, 11, "E4 Credit", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 11, str.tostring(e4_score, "#.#") + " " + e4_state, text_color=e4_c, text_size=size.small)
+    
+    table.cell(panel, 0, 12, "E5 Volatility", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 12, str.tostring(e5_score, "#.#") + " " + e5_state, text_color=e5_c, text_size=size.small)
+    
+    // Market State
+    table.cell(panel, 0, 13, "【Market State】", text_color=color.yellow, text_size=size.small)
+    table.cell(panel, 1, 13, m_state + " " + m_state_name, text_color=color.aqua, text_size=size.small)
+    
+    // Market Risk Gate
+    gate_color = e6_gate == "GREEN" ? color.green :
+                 e6_gate == "YELLOW" ? color.yellow :
+                 e6_gate == "ORANGE" ? color.orange :
+                 e6_gate == "RED" ? color.red : color.black
+    
+    table.cell(panel, 0, 14, "【RISK GATE】", text_color=color.yellow, text_size=size.small)
+    table.cell(panel, 1, 14, e6_gate, bgcolor=gate_color, text_color=color.white, text_size=size.small)
+    
+    table.cell(panel, 0, 15, "Market Score", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 15, str.tostring(e6_score, "#.#") + "/100", text_color=color.white, text_size=size.small)
+    
+    // Confirmation
+    conf_color = conf_status == "CONFIRMED" ? color.green :
+                 conf_status == "PARTIAL (Waiting Market)" ? color.orange :
+                 conf_status == "DIVERGENT (Market Ahead)" ? color.purple : color.gray
+    
+    table.cell(panel, 0, 16, "【Confirmation】", text_color=color.yellow, text_size=size.small)
+    table.cell(panel, 1, 16, conf_status, text_color=conf_color, text_size=size.small)
+    
+    // 关键指标
+    table.cell(panel, 0, 17, "10Y Yield", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 17, str.tostring(f_us10y, "#.##") + "%", text_color=color.white, text_size=size.small)
+    
+    table.cell(panel, 0, 18, "2Y 5D Change", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 18, str.tostring(e1_d2y5d, "#.#") + " bp", text_color=e1_d2y5d > 15 ? color.red : color.gray, text_size=size.small)
+    
+    table.cell(panel, 0, 19, "DXY 5D", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 19, str.tostring(e2_dxy5d, "#.##") + "%", text_color=color.white, text_size=size.small)
+    
+    table.cell(panel, 0, 20, "USDJPY 5D", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 20, str.tostring(e3_jpy5d, "#.##") + "%", text_color=color.white, text_size=size.small)
+    
+    table.cell(panel, 0, 21, "Curve 2s10", text_color=color.silver, text_size=size.small)
+    table.cell(panel, 1, 21, str.tostring(e1_curve, "#.#") + " bp", text_color=color.white, text_size=size.small)
+
+// =============================================================================
+// 12. 警报
+// =============================================================================
+
+alertcondition(m_state != m_state[1], title="Market State Change", message="GMRE-TV Market State Changed")
+alertcondition(e6_gate != e6_gate[1], title="Risk Gate Change", message="GMRE-TV Risk Gate Changed")
+alertcondition(e6_gate == "RED" and e6_gate[1] != "RED", title="Risk Gate RED", message="GMRE-TV: Market Risk Gate = RED")
+alertcondition(e6_gate == "BLACK" and e6_gate[1] != "BLACK", title="Risk Gate BLACK", message="GMRE-TV: Market Risk Gate = BLACK")
+
+// =============================================================================
+// 13. 隐藏输出（Data Window）
+// =============================================================================
+
+plot(e1_score, "E1 Score", display=display.none)
+plot(e2_score, "E2 Score", display=display.none)
+plot(e3_score, "E3 Score", display=display.none)
+plot(e4_score, "E4 Score", display=display.none)
+plot(e5_score, "E5 Score", display=display.none)
+plot(e6_score, "E6 Market Risk Score", display=display.none)

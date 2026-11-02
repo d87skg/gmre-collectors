@@ -1,4 +1,4 @@
-"""engines_v3/run_v4.py - GMRE 3.3 完整集成版（防弹 + 宏观事件 + 完整轨道 + P1组合原因）"""
+"""engines_v3/run_v4.py - GMRE 4.0 完整集成版（Fragility 提前 + 新引擎调用）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -24,29 +24,17 @@ from engines_v3 import (
     invalidation_conditions
 )
 
-# 引入事件日历
 try:
     from tools.check_events import check_upcoming_events
 except ImportError:
     check_upcoming_events = lambda **kwargs: []
 
-# 引入 rrp_guard 用于溯源显示
 try:
     from tools.rrp_guard import run_rrp_guard
 except ImportError:
     run_rrp_guard = None
 
 DB_PATH = 'data/macro.db'
-
-# ============ 体制展示映射 ============
-REGIME_NAMES = {
-    'R0': 'Mild Recovery',
-    'R1': 'Overheating',
-    'R2': 'Stagflation',
-    'R3': 'Recession Warning',
-    'R4': 'Deep Recession',
-    'R5': 'Systemic Liquidity Crisis',
-}
 
 
 def get_git_commit():
@@ -58,7 +46,6 @@ def get_git_commit():
 
 
 def get_series_meta(sid, override_value=None):
-    """获取序列最新值。override_value 用于强制覆盖（如 RRP 走 guard 主源）"""
     try:
         conn = sqlite3.connect(DB_PATH)
         row = conn.execute(
@@ -78,20 +65,9 @@ def get_series_meta(sid, override_value=None):
 
 
 def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_confirmed, p_r4_r5=None):
-    """Risk Gate v4.3 - 组合原因显示版
-
-    判定顺序（从严到松）：
-      1. 系统性危机 → BLACK
-      2. RED 分支：Fragility≥80 / FUNDING+CREDIT共振 / P(R4+R5)≥50%
-      3. ORANGE 分支：Fragility≥65 / 压力层≥1 / P(R4+R5)≥30%
-      4. YELLOW 分支：Fragility≥50
-      5. 其他 → GREEN
-
-    每个分支都收集所有命中原因后组合输出，方便一眼看穿。
-    """
+    """Risk Gate v4.3 - 组合原因"""
     if frag_level == 'N/A' or frag_level is None:
         return 'UNKNOWN', '🚨 数据缺失：Fragility 状态无法计算'
-
     try:
         frag_score = float(frag_level.split('(')[1].split(')')[0])
         if not math.isfinite(frag_score):
@@ -99,11 +75,9 @@ def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_con
     except Exception:
         return 'SAFE_MODE', '🚨 核心计算故障：Fragility 解析失败'
 
-    # ============ BLACK ============
     if systemic_confirmed:
         return 'BLACK', '🚨 系统性危机已确认'
 
-    # ============ RED：收集所有触发 RED 的原因 ============
     red_reasons = []
     if frag_score >= 80:
         red_reasons.append(f"Fragility={frag_score:.1f}≥80")
@@ -114,7 +88,6 @@ def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_con
     if red_reasons:
         return 'RED', f'🔴 高风险：{", ".join(red_reasons)}'
 
-    # ============ ORANGE：收集所有触发 ORANGE 的原因 ============
     orange_reasons = []
     if frag_score >= 65:
         orange_reasons.append(f"Fragility={frag_score:.1f}≥65")
@@ -125,19 +98,37 @@ def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_con
     if orange_reasons:
         return 'ORANGE', f'🟠 中高风险：{", ".join(orange_reasons)}'
 
-    # ============ YELLOW ============
     if frag_score >= 50:
         return 'YELLOW', f'🟡 中等：Fragility={frag_score:.1f}'
+    return 'GREEN', f'🟢 低风险：Fragility={frag_score:.1f}'
 
-    # ============ GREEN ============
-    return 'GREEN', f'🟢 低风险：Fragility={frag_score:.1f}, P(R4+R5)={p_r4_r5*100 if p_r4_r5 is not None else 0:.1f}%'
+
+def get_dual_phase_guide(gate, frag_score, cali_score, scenario, dxy_pct):
+    """🆕 双阶段操作指南"""
+    if cali_score and cali_score >= 60:
+        phase, emoji = '上半场（去杠杆中）', '🔴'
+    elif dxy_pct and dxy_pct < 10:
+        phase, emoji = '上半场尾部（流动性枯竭末期）', '🟠'
+    elif gate in ('ORANGE', 'YELLOW'):
+        phase, emoji = '过渡期（政策底已现，市场底待确认）', '🟡'
+    else:
+        phase, emoji = '下半场（降息重估）', '🟢'
+
+    if phase.startswith('上半场'):
+        cash, gold, note = '50-70%', '5-10%', '现金为王，等右侧信号'
+    elif phase.startswith('过渡'):
+        cash, gold, note = '40-60%', '7-10%', '保持防守，分批左侧埋伏'
+    else:
+        cash, gold, note = '10-20%', '5-10%', '子弹打出去，享受估值重估'
+
+    return {'phase': phase, 'phase_emoji': emoji,
+            'cash_recommendation': cash, 'gold_recommendation': gold, 'note': note}
 
 
 def main():
     asof = datetime.now().strftime('%Y-%m-%d')
-    print(f"\n{'='*60}\n  GMRE 3.3 完整版 - {asof}\n{'='*60}\n")
+    print(f"\n{'='*60}\n  GMRE 4.0 完整版 - {asof}\n{'='*60}\n")
 
-    # ============ 事件日历 ============
     print(f"{'-'*50}\n  📅 宏观事件倒计时检查\n{'-'*50}")
     check_upcoming_events(config_path="config/events_calendar.yaml")
     print(f"{'-'*50}\n")
@@ -155,7 +146,7 @@ def main():
     except Exception as e:
         print(f"  ⚠️ 数据自检异常: {e}")
 
-    # ============ 轨道1 ============
+    # ============ 轨道1：Base Regime ============
     print(f"\n┌{'─'*58}┐\n│  【轨道1】Base Regime (R0-R6)                     │\n└{'─'*58}┘\n")
     for mod in [engine_inf, engine_mon, engine_fis, engine_liq, engine_risk]:
         try:
@@ -192,9 +183,21 @@ def main():
     except Exception as e:
         print(f"  ⚠️ GMS异常: {e}")
 
-    # ============ 核心数据溯源（RRP 走 guard 主源）============
-    print(f"\n{'─'*50}\n  🔍 核心数据溯源 (Source & Definition)")
+    # ============ 🆕 预轨：Fragility（提前计算）============
+    print(f"\n┌{'─'*58}┐\n│  【预轨】Fragility（提前计算）                       │\n└{'─'*58}┘\n")
+    frag_level = 'N/A'
+    try:
+        from engines_v3 import fragility_engine
+        with contextlib.redirect_stdout(io.StringIO()):
+            _frag_pre = fragility_engine.compute_fragility(asof)
+        frag_level = f"{_frag_pre['level']} ({_frag_pre['fragility_score']})"
+        frag_score_val = _frag_pre['fragility_score']
+        print(f"  [Fragility] {frag_level}")
+    except Exception as e:
+        print(f"  ⚠️ Fragility 提前计算失败: {e}")
 
+    # ============ 核心数据溯源 ============
+    print(f"\n{'─'*50}\n  🔍 核心数据溯源")
     rrp_override = None
     rrp_source_tag = ""
     if run_rrp_guard is not None:
@@ -244,13 +247,13 @@ def main():
         pass
     print(f"{'─'*50}")
 
-    # ============ 轨道2：Stress Overlay V2 ============
-    print(f"\n┌{'─'*58}┐\n│  【轨道2】Stress Overlay V2 (S0-S8)                │\n└{'─'*58}┘\n")
+    # ============ 轨道2：Stress Overlay V2 (S0-S10) ============
+    print(f"\n┌{'─'*58}┐\n│  【轨道2】Stress Overlay V2 (S0-S10)               │\n└{'─'*58}┘\n")
     stress = {}
     try:
         stress = stress_overlay_v2.evaluate_stress(asof)
         print(f"  当前压力状态: {stress['overall']}")
-        print(f"  已触发层数: {stress['triggered_count']}/7")
+        print(f"  已触发层数: {stress['triggered_count']}/9")
         for l in stress['layers']:
             icon = '🚨' if l['triggered'] else '⏸️'
             print(f"  {icon} [{l['layer']}] {l['name']}")
@@ -259,6 +262,60 @@ def main():
 
     # ============ 轨道3：增强引擎 ============
     print(f"\n┌{'─'*58}┐\n│  【轨道3】多维度增强引擎                            │\n└{'─'*58}┘\n")
+
+    # 🆕 Dollar_Anchor
+    dollar_result = {}
+    print(f"  [Dollar_Anchor] ", end='', flush=True)
+    try:
+        from engines_v3 import dollar_anchor
+        with contextlib.redirect_stdout(io.StringIO()):
+            dollar_result = dollar_anchor.compute_dollar_anchor(asof)
+        print(f"{dollar_result.get('scenario_msg', 'N/A')}")
+    except Exception as e:
+        print(f"❌ {str(e)[:50]}")
+
+    # 🆕 Chain E
+    chain_e_result = {}
+    print(f"  [Chain_E]       ", end='', flush=True)
+    try:
+        from engines_v3 import transmission_graph
+        with contextlib.redirect_stdout(io.StringIO()):
+            trans = transmission_graph.compute_transmission(asof)
+        # 找 Chain E
+        for c in trans.get('chains', []):
+            if 'Chain E' in c.get('name', ''):
+                chain_e_result = c
+                break
+        if chain_e_result:
+            print(f"{chain_e_result.get('status', 'N/A')} (激活度={chain_e_result.get('activation', 0):.3f})")
+        else:
+            print("N/A")
+    except Exception as e:
+        print(f"❌ {str(e)[:50]}")
+
+    # 🆕 CALI
+    cali_result = {}
+    print(f"  [CALI]          ", end='', flush=True)
+    try:
+        from engines_v3 import cali_engine
+        with contextlib.redirect_stdout(io.StringIO()):
+            cali_result = cali_engine.compute_cali(asof)
+        print(f"{cali_result.get('cali_score', 0):.1f}/100 ({cali_result.get('level', 'N/A')})")
+    except Exception as e:
+        print(f"❌ {str(e)[:50]}")
+
+    # 🆕 Crowding
+    crowding_result = {}
+    print(f"  [Crowding]      ", end='', flush=True)
+    try:
+        from engines_v3 import crowding_engine
+        with contextlib.redirect_stdout(io.StringIO()):
+            crowding_result = crowding_engine.compute_crowding(asof)
+        print(f"{crowding_result.get('score', 0):.1f}/100 ({crowding_result.get('level', 'N/A')})")
+    except Exception as e:
+        print(f"❌ {str(e)[:50]}")
+
+    # 其他（Positioning / Velocity / Probability / Contagion）
     for name, fn in [
         ('Positioning', lambda: __import__('engines_v3.positioning_engine', fromlist=['evaluate_positioning']).evaluate_positioning(asof)),
         ('Velocity', lambda: __import__('engines_v3.velocity_engine', fromlist=['evaluate_velocity']).evaluate_velocity(asof)),
@@ -283,20 +340,8 @@ def main():
         except Exception as e:
             print(f"❌ {str(e)[:50]}")
 
-    # ============ 轨道4：智能层 ============
-    print(f"\n┌{'─'*58}┐\n│  【轨道4】GMRE 3.3 智能层                            │\n└{'─'*58}┘\n")
-    frag_level = 'N/A'
-    print(f"  [Fragility]    ", end='', flush=True)
-    try:
-        from engines_v3 import fragility_engine
-        with contextlib.redirect_stdout(io.StringIO()):
-            frag = fragility_engine.compute_fragility(asof)
-        frag_level = f"{frag['level']} ({frag['fragility_score']})"
-        frag_score_val = frag['fragility_score']
-        print(frag_level)
-    except Exception as e:
-        print(f"❌ {str(e)[:50]}")
-        frag_level = 'N/A'
+    # ============ 轨道4：智能层（Fragility 已在预轨算过）============
+    print(f"\n┌{'─'*58}┐\n│  【轨道4】GMRE 4.0 智能层                            │\n└{'─'*58}┘\n")
 
     cu_spread = get_series_meta('CU_SPREAD_PCT')[1]
     if cu_spread:
@@ -320,7 +365,6 @@ def main():
     except Exception as e:
         print(f"❌ {str(e)[:50]}")
 
-    # ============ LTI Clearing ============
     print(f"  [LTI Clearing]  ", end='', flush=True)
     try:
         from engines_v3 import lti_engine
@@ -335,7 +379,7 @@ def main():
     except Exception as e:
         print(f"❌ {str(e)[:50]}")
 
-    # ============ 尾轨：风控 ============
+    # ============ 尾轨 ============
     print(f"\n┌{'─'*58}┐\n│  【尾轨】尾部状态 + 预警 + 对冲                    │\n└{'─'*58}┘\n")
     try:
         tail = yen_carry_state.update_state(asof)
@@ -388,7 +432,7 @@ def main():
     except Exception as e:
         print(f"  ⚠️ 防线异常: {e}")
 
-    # ============ 计算最终风险（P1：传入 p_r4_r5）============
+    # ============ 计算最终风险 ============
     contagion_status = 'NORMAL'
     gate, gate_msg = compute_risk_gate(
         frag_level,
@@ -402,7 +446,20 @@ def main():
     print(f"  {gate_msg}")
     print(f"  Risk Gate: {gate}")
 
-    # ============ P1：Base Regime 显示对齐概率引擎 ============
+    # ============ 🆕 双阶段操作指南 ============
+    dxy_pct = dollar_result.get('dxy_5y_pct') if dollar_result else None
+    cali_score = cali_result.get('cali_score') if cali_result else None
+    scenario = dollar_result.get('scenario', 'N/A') if dollar_result else 'N/A'
+    try:
+        phase_guide = get_dual_phase_guide(gate, frag_score_val, cali_score, scenario, dxy_pct)
+        print(f"\n┌{'─'*58}┐\n│  【双阶段】当前所处阶段                            │\n└{'─'*58}┘\n")
+        print(f"  {phase_guide['phase_emoji']} {phase_guide['phase']}")
+        print(f"  💰 现金建议: {phase_guide['cash_recommendation']}")
+        print(f"  🥇 黄金建议: {phase_guide['gold_recommendation']}")
+        print(f"  💡 {phase_guide['note']}")
+    except Exception as e:
+        print(f"  ⚠️ 双阶段指南异常: {e}")
+
     _regime_display = "N/A"
     try:
         if p_r4_r5_val >= 0.50:
@@ -417,7 +474,7 @@ def main():
     _frag_display = frag_level if frag_level != 'N/A' else "N/A"
 
     print(f"\n{'='*60}")
-    print(f"  GMRE 3.3 运行完成")
+    print(f"  GMRE 4.0 运行完成")
     print(f"  Base Regime: {_regime_display} | Fragility: {_frag_display} | Risk Gate: {gate}")
     print(f"{'='*60}\n")
 
@@ -444,6 +501,9 @@ def main():
             "fragility_level": frag_level,
             "gate_msg": gate_msg,
             "p_r4_r5": p_r4_r5_val,
+            "dollar_anchor": dollar_result.get('scenario') if dollar_result else None,
+            "cali_score": cali_result.get('cali_score') if cali_result else None,
+            "crowding_score": crowding_result.get('score') if crowding_result else None,
             "data_audit": {"status": audit_status}
         }
 
@@ -452,7 +512,7 @@ def main():
             (forecast_date, model_version, code_commit, input_snapshot_hash, regime,
              p_r4_r5, fragility_score, risk_gate, data_quality_state, details_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (asof, 'GMRE_3.3', code_commit, input_hash, regime_label,
+            (asof, 'GMRE_4.0', code_commit, input_hash, regime_label,
              p_r4_r5_val, frag_score_val, gate, audit_status,
              json.dumps(details, ensure_ascii=False)))
 

@@ -1,0 +1,92 @@
+# ============================================================
+# GLOBAL MACRO DATA OS — regime / GMS / factor 配置
+# 所有因子分数范围: -100 (极端收紧/风险off) ~ +100 (极端宽松/风险on)
+# ============================================================
+
+gms:
+  weights:            # 第一版线性加权（缺失因子按可用权重重归一化）
+    liquidity: 0.25
+    growth: 0.15
+    inflation: 0.10
+    rates: 0.15
+    credit: 0.10
+    usd: 0.10
+    crypto: 0.15
+
+regime:
+  # R0 <-70 | R1 -70~-35 | R2 -35~0 | R3 0~35 | R4 35~70 | R5 >70
+  thresholds:
+    R0: -70.0
+    R1: -35.0
+    R2: 0.0
+    R3: 35.0
+    R4: 70.0
+    R5: 999.0
+  persistence:        # 防止 regime 来回跳: 最近 N 次中至少 k 次同向才切换
+    window: 3
+    min_votes: 2
+
+confidence:
+  coverage_weight: 0.7     # 因子覆盖率对整体置信度的权重
+  factor_quality_weight: 0.3
+
+assets:
+  # asset -> {factor: weight}  (gms 为宏观综合分, 与因子同量纲)
+  BTC:
+    gms: 0.30
+    liquidity: 0.20
+    usd: 0.15
+    rates: 0.15
+    crypto: 0.20
+  ETH:
+    gms: 0.25
+    liquidity: 0.20
+    usd: 0.15
+    rates: 0.10
+    crypto: 0.30
+  GOLD:
+    gms: 0.15
+    liquidity: 0.15
+    usd: 0.35
+    rates: 0.25
+    crypto: 0.10
+  SPX:
+    gms: 0.35
+    growth: 0.20
+    credit: 0.20
+    rates: 0.15
+    usd: 0.10
+
+# 参考锚点（确定性映射规则, 非数据源; 用于把原始水平/变化映射到 -100~+100）
+anchors:
+  dxy:
+    - {level: 90.0, score: 40.0}
+    - {level: 97.0, score: 10.0}
+    - {level: 104.0, score: -20.0}
+    - {level: 112.0, score: -55.0}
+  yc10y:
+    - {level: 2.5, score: 45.0}
+    - {level: 3.5, score: 15.0}
+    - {level: 4.5, score: -20.0}
+    - {level: 5.5, score: -60.0}
+  vix:
+    - {level: 12.0, score: 40.0}
+    - {level: 20.0, score: 0.0}
+    - {level: 28.0, score: -40.0}
+    - {level: 40.0, score: -80.0}
+  tga_bn:            # TGA (十亿美元) 越高 = 流动性抽水越严重
+    - {level: 150.0, score: 60.0}
+    - {level: 400.0, score: 15.0}
+    - {level: 750.0, score: -25.0}
+    - {level: 1200.0, score: -60.0}
+  wb_growth:
+    - {level: -2.0, score: -70.0}
+    - {level: 0.5, score: -30.0}
+    - {level: 2.0, score: 0.0}
+    - {level: 3.5, score: 35.0}
+    - {level: 5.0, score: 60.0}
+  wb_inflation:
+    - {level: 0.0, score: -30.0}
+    - {level: 2.0, score: 0.0}
+    - {level: 4.0, score: -25.0}
+    - {level: 7.0, score: -60.0}

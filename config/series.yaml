@@ -1,0 +1,70 @@
+# ============================================================
+# GLOBAL MACRO DATA OS — series registry
+# series_id -> {source, symbol, factor, category, frequency, unit, direction}
+# direction: +1 = 上升对风险资产友好, -1 = 上升对风险资产不利
+# 注意: series_id 用中性命名; observation.source 记录真实来源 (可审计)。
+# ============================================================
+series:
+  # ---------- FRED (宏观/利率/流动性, 需要 FRED_API_KEY) ----------
+  FEDFUNDS:    {source: fred, symbol: FEDFUNDS,   factor: policy_rate, category: rates,   frequency: daily,  unit: '%',   direction: -1}
+  SOFR:        {source: fred, symbol: SOFR,       factor: funding,     category: rates,   frequency: daily,  unit: '%',   direction: -1}
+  DGS2:        {source: fred, symbol: DGS2,       factor: rates_2y,    category: rates,   frequency: daily,  unit: '%',   direction: -1}
+  DGS10:       {source: fred, symbol: DGS10,      factor: rates_10y,   category: rates,   frequency: daily,  unit: '%',   direction: -1}
+  DGS30:       {source: fred, symbol: DGS30,      factor: rates_30y,   category: rates,   frequency: daily,  unit: '%',   direction: -1}
+  T10Y2Y:      {source: fred, symbol: T10Y2Y,     factor: curve,       category: rates,   frequency: daily,  unit: '%',   direction: +1}
+  T10YIE:      {source: fred, symbol: T10YIE,     factor: breakeven,   category: inflation, frequency: daily, unit: '%',  direction: +1}
+  CPIAUCSL:    {source: fred, symbol: CPIAUCSL,   factor: inflation,   category: inflation, frequency: monthly, unit: 'idx', direction: -1}
+  CPILFESL:    {source: fred, symbol: CPILFESL,   factor: core_inflation, category: inflation, frequency: monthly, unit: 'idx', direction: -1}
+  PCEPI:       {source: fred, symbol: PCEPI,      factor: pce,         category: inflation, frequency: monthly, unit: 'idx', direction: -1}
+  UNRATE:      {source: fred, symbol: UNRATE,     factor: unemployment, category: growth, frequency: monthly, unit: '%', direction: -1}
+  PAYEMS:      {source: fred, symbol: PAYEMS,     factor: employment,  category: growth,   frequency: monthly, unit: 'k',  direction: +1}
+  M2SL:        {source: fred, symbol: M2SL,       factor: money_supply, category: liquidity, frequency: monthly, unit: 'bn', direction: +1}
+  WALCL:       {source: fred, symbol: WALCL,      factor: fed_balance_sheet, category: liquidity, frequency: weekly, unit: 'bn', direction: +1}
+  RRPONTSYD:   {source: fred, symbol: RRPONTSYD,  factor: reverse_repo, category: liquidity, frequency: daily, unit: 'bn', direction: -1}
+  DTWEXBGS:    {source: fred, symbol: DTWEXBGS,   factor: usd_index,   category: usd,     frequency: daily,  unit: 'idx', direction: -1}
+  BAMLH0A0HYM2: {source: fred, symbol: BAMLH0A0HYM2, factor: hy_spread, category: credit, frequency: daily, unit: '%', direction: -1}
+  BAMLC0A0CM:  {source: fred, symbol: BAMLC0A0CM, factor: ig_spread,   category: credit,   frequency: daily,  unit: '%',   direction: -1}
+
+  # ---------- U.S. Treasury (官方, 无需 key) ----------
+  TGA_NET_FLOW: {source: treasury, symbol: tga_net_flow, factor: tga, category: liquidity, frequency: daily, unit: 'usd', direction: +1}
+  DEBT_TOTAL:   {source: treasury, symbol: debt_to_penny, factor: debt, category: fiscal,   frequency: daily, unit: 'usd', direction: -1}
+
+  # ---------- 美债收益率曲线 (Treasury 官方 CSV, 经 market collector) ----------
+  YC2Y:        {source: market, symbol: us_2y,    factor: rates_2y, category: rates,  frequency: daily, unit: '%',   direction: -1}
+  YC5Y:        {source: market, symbol: us_5y,    factor: rates_5y, category: rates,  frequency: daily, unit: '%',   direction: -1}
+  YC10Y:       {source: market, symbol: us_10y,   factor: rates_10y, category: rates,  frequency: daily, unit: '%',   direction: -1}
+  YC30Y:       {source: market, symbol: us_30y,   factor: rates_30y, category: rates,  frequency: daily, unit: '%',   direction: -1}
+
+  # ---------- 市场 (CBOE 官方 VIX / Frankfurter 汇率篮子 / gold-api) ----------
+  ECB_EURUSD:  {source: ecb, symbol: EURUSD,   factor: usd_eur, category: usd, frequency: daily, unit: 'fx',  direction: -1}
+  VIX:         {source: market, symbol: VIX,      factor: risk,      category: risk,   frequency: daily, unit: 'idx', direction: -1}
+  DXY_PROXY:   {source: market, symbol: usd_basket, factor: usd_index, category: usd, frequency: daily, unit: 'idx', direction: -1}
+  GOLD_PRICE:  {source: market, symbol: XAU,      factor: gold,      category: market, frequency: daily, unit: 'usd', direction: +1}
+
+  # ---------- SEC EDGAR (无需 key) ----------
+  SEC_REV_AAPL:   {source: sec, symbol: AAPL, factor: revenue, category: equity, frequency: annual, unit: 'usd', direction: +1}
+  SEC_NI_AAPL:    {source: sec, symbol: AAPL, factor: net_income, category: equity, frequency: annual, unit: 'usd', direction: +1}
+  SEC_REV_MSFT:   {source: sec, symbol: MSFT, factor: revenue, category: equity, frequency: annual, unit: 'usd', direction: +1}
+  SEC_NI_MSFT:    {source: sec, symbol: MSFT, factor: net_income, category: equity, frequency: annual, unit: 'usd', direction: +1}
+
+  # ---------- Alpha Vantage (需要 key, 25 req/day) ----------
+  AV_SPX_CLOSE: {source: alphavantage, symbol: SPY, factor: equity, category: market, frequency: daily, unit: 'usd', direction: +1}
+
+  # ---------- Crypto 市场 (CoinGecko 主 / Binance Vision 兜底, 中性命名) ----------
+  BTC_PRICE:    {source: coingecko, symbol: bitcoin,  factor: btc_price,  category: crypto, frequency: daily, unit: 'usd', direction: +1}
+  ETH_PRICE:    {source: coingecko, symbol: ethereum, factor: eth_price,  category: crypto, frequency: daily, unit: 'usd', direction: +1}
+  SOL_PRICE:    {source: coingecko, symbol: solana,   factor: sol_price,  category: crypto, frequency: daily, unit: 'usd', direction: +1}
+  BTC_MCAP:     {source: coingecko, symbol: bitcoin,  factor: btc_mcap,   category: crypto, frequency: daily, unit: 'usd', direction: +1}
+  ETH_MCAP:     {source: coingecko, symbol: ethereum, factor: eth_mcap,   category: crypto, frequency: daily, unit: 'usd', direction: +1}
+  TOTAL_MCAP:   {source: coingecko, symbol: global,   factor: total_mcap, category: crypto, frequency: daily, unit: 'usd', direction: +1}
+  BTC_DOM:      {source: coingecko, symbol: global,   factor: btc_dominance, category: crypto, frequency: daily, unit: '%', direction: -1}
+  BTC_24H:      {source: coingecko, symbol: bitcoin,  factor: btc_24h,    category: crypto, frequency: daily, unit: '%',   direction: +1}
+  ETH_24H:      {source: coingecko, symbol: ethereum, factor: eth_24h,    category: crypto, frequency: daily, unit: '%',   direction: +1}
+  BTC_7D:       {source: coingecko, symbol: bitcoin,  factor: btc_7d,     category: crypto, frequency: daily, unit: '%',   direction: +1}
+  ETH_7D:       {source: coingecko, symbol: ethereum, factor: eth_7d,     category: crypto, frequency: daily, unit: '%',   direction: +1}
+  BTC_VOL:      {source: coingecko, symbol: bitcoin,  factor: btc_volume, category: crypto, frequency: daily, unit: 'usd', direction: +1}
+
+  # ---------- DeFiLlama (onchain / DeFi 系统) ----------
+  LLAMA_TVL_TOTAL:   {source: defillama, symbol: tvl_total,   factor: tvl,          category: onchain, frequency: daily, unit: 'usd', direction: +1}
+  LLAMA_STABLECOINS: {source: defillama, symbol: stablecoins, factor: stablecoin_supply, category: onchain, frequency: daily, unit: 'usd', direction: +1}
+  LLAMA_DEX_VOL:     {source: defillama, symbol: dex_volume,  factor: dex_volume,   category: onchain, frequency: daily, unit: 'usd', direction: +1}
