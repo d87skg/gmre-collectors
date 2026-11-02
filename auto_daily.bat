@@ -54,6 +54,9 @@ if exist collectors\deribit_skew.py (.venv\Scripts\python.exe -X utf8 collectors
 echo [8.2/16] Hyperliquid depth collection...
 if exist collectors\hyperliquid_depth.py (.venv\Scripts\python.exe -X utf8 collectors\hyperliquid_depth.py)
 
+echo [8.3/16] Extra macro (Gas/Rebar/VXV)...
+.venv\Scripts\python.exe -X utf8 collectors\extra_macro.py
+
 echo [8.5/16] Copper spread engine...
 .venv\Scripts\python.exe -X utf8 engines_v3\spread_engine.py
 
