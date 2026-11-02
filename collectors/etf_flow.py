@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
-"""collectors/etf_flow.py - ETF 成交量采集（TLT/GLD/HYG/SPY）"""
+"""collectors/etf_flow.py - ETF 成交量采集（带重试 + 代理）"""
 import requests
 import sqlite3
+import time
+import os
 from datetime import datetime, timezone
 
 DB_PATH = 'data/macro.db'
@@ -14,27 +16,45 @@ ETF_MAP = {
     'LQD': 'LQD_VOLUME',
 }
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-def fetch_etf_volume(symbol):
+PROXY = os.environ.get('YAHOO_PROXY', None)
+PROXIES = {"http": PROXY, "https": PROXY} if PROXY else None
+
+
+def fetch_etf_volume(symbol, retries=3):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     params = {"interval": "1d", "range": "3mo"}
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        result = data.get('chart', {}).get('result', [])
-        if result:
-            timestamps = result[0].get('timestamp', [])
-            volumes = result[0].get('indicators', {}).get('quote', [{}])[0].get('volume', [])
-            rows = []
-            for ts, v in zip(timestamps, volumes):
-                if v is not None and v > 0:
-                    d = datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d')
-                    rows.append((d, float(v)))
-            return rows
-    except Exception as e:
-        print(f"  ❌ {symbol} 失败: {str(e)[:60]}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, headers=headers,
+                             timeout=30, proxies=PROXIES)
+            r.raise_for_status()
+            data = r.json()
+            result = data.get('chart', {}).get('result', [])
+            if result:
+                timestamps = result[0].get('timestamp', [])
+                volumes = result[0].get('indicators', {}).get('quote', [{}])[0].get('volume', [])
+                rows = []
+                for ts, v in zip(timestamps, volumes):
+                    if v is not None and v > 0:
+                        d = datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d')
+                        rows.append((d, float(v)))
+                return rows
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(2)
+            else:
+                print(f"  ❌ {symbol} 连续 {retries} 次失败: {str(e)[:60]}")
     return None
 
 
@@ -45,6 +65,7 @@ def main():
 
     conn = sqlite3.connect(DB_PATH)
     total = 0
+    success = 0
     for symbol, sid in ETF_MAP.items():
         rows = fetch_etf_volume(symbol)
         if not rows:
@@ -60,11 +81,12 @@ def main():
             except Exception:
                 pass
         total += count
+        success += 1
         print(f"  ✅ {symbol} → {sid}: {count} 条 (最新 {rows[-1][0]} = {rows[-1][1]:,.0f})")
 
     conn.commit()
     conn.close()
-    print(f"\n  总计: {total} 条")
+    print(f"\n  总计: {total} 条，成功 {success}/{len(ETF_MAP)} 个品种")
     print(f"{'='*60}\n")
 
 

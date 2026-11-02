@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""engines_v3/crowding_engine.py - 拥挤度引擎（CFTC + ETF + Deribit PCR）"""
+"""engines_v3/crowding_engine.py - 拥挤度引擎（v3: 表结构自适应）"""
 import sqlite3
 import pandas as pd
 import json
@@ -8,21 +8,23 @@ from datetime import datetime
 DB_PATH = 'data/macro.db'
 
 
-def _load(conn, sid, limit=60):
-    for col in ['timestamp', 'date']:
-        try:
-            df = pd.read_sql_query(
-                f"SELECT {col} AS dt, value FROM observations "
-                f"WHERE series_id=? ORDER BY {col} DESC LIMIT ?",
-                conn, params=(sid, limit)
-            )
-            if not df.empty:
-                df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
-                df = df.dropna(subset=['dt']).drop_duplicates(subset=['dt'], keep='first')
-                return df.sort_values('dt').set_index('dt')['value'].astype(float)
-        except Exception:
-            continue
-    return pd.Series(dtype=float)
+def _table_exists(conn, table):
+    try:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,)
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
+def _get_columns(conn, table):
+    try:
+        df = pd.read_sql_query(f"PRAGMA table_info({table})", conn)
+        return [r['name'] for _, r in df.iterrows()]
+    except Exception:
+        return []
 
 
 def _get_pct(conn, sid):
@@ -35,37 +37,93 @@ def _get_pct(conn, sid):
             return float(df.iloc[0]['pct_5y'])
     except Exception:
         pass
+    try:
+        df_obs = pd.read_sql_query(
+            "SELECT value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 1260",
+            conn, params=(sid,)
+        )
+        if len(df_obs) >= 20:
+            vals = df_obs['value'].astype(float)
+            current = float(vals.iloc[0])
+            pct = (vals < current).mean() * 100
+            return round(pct, 2)
+    except Exception:
+        pass
     return None
+
+
+def _query_jpy_cot(conn):
+    """CFTC 日元空头分位（自适应列名和 series_id）"""
+    if not _table_exists(conn, 'cftc_fx'):
+        return None, 'no_table'
+    
+    cols = _get_columns(conn, 'cftc_fx')
+    if 'net_noncommercial' not in cols:
+        return None, f'no_col({cols})'
+    
+    # 尝试多种 series_id
+    for sid_candidate in ['COT_JPY', 'JPY', 'COT_JAPANESE_YEN', 'JAPANESE YEN']:
+        try:
+            df = pd.read_sql_query(
+                f"SELECT net_noncommercial FROM cftc_fx WHERE series_id=? ORDER BY date DESC LIMIT 260",
+                conn, params=(sid_candidate,)
+            )
+            if not df.empty and len(df) >= 20:
+                vals = df['net_noncommercial'].astype(float)
+                current = float(vals.iloc[0])
+                pct = (vals > current).mean() * 100
+                return round(pct, 1), f'ok({sid_candidate})'
+        except Exception:
+            continue
+    return None, 'no_series_id'
+
+
+def _query_pcr(conn):
+    """Deribit PCR（自适应列名和表名）"""
+    for table_candidate in ['deribit_skew', 'deribit_options']:
+        if not _table_exists(conn, table_candidate):
+            continue
+        cols = _get_columns(conn, table_candidate)
+        pcr_col = None
+        for c in ['pcr', 'pcr_25d', 'put_call_ratio']:
+            if c in cols:
+                pcr_col = c
+                break
+        if not pcr_col:
+            continue
+        try:
+            df = pd.read_sql_query(
+                f"SELECT {pcr_col} AS pcr FROM {table_candidate} ORDER BY rowid DESC LIMIT 1",
+                conn
+            )
+            if not df.empty and pd.notna(df.iloc[0]['pcr']):
+                return float(df.iloc[0]['pcr']), f'ok({table_candidate}.{pcr_col})'
+        except Exception:
+            continue
+    return None, 'no_table_or_col'
 
 
 def compute_crowding(asof: str) -> dict:
     score = 0.0
     details = {}
+    diag = {}
 
     try:
         conn = sqlite3.connect(DB_PATH)
 
-        # 1. CFTC COT - 日元空头历史分位
-        try:
-            df = pd.read_sql_query(
-                "SELECT net_noncommercial FROM cftc_fx WHERE series_id='COT_JPY' ORDER BY date DESC LIMIT 260",
-                conn
-            )
-            if not df.empty and len(df) >= 20:
-                vals = df['net_noncommercial'].astype(float)
-                current = float(vals.iloc[0])
-                pct = (vals > current).mean() * 100  # 空头越多，反向分位越高
-                if pct > 90:
-                    score += 40
-                elif pct > 80:
-                    score += 25
-                details['JPY_COT_pct'] = round(pct, 1)
-            else:
-                details['JPY_COT_pct'] = 'N/A'
-        except Exception as e:
-            details['JPY_COT_pct'] = f'ERR:{str(e)[:20]}'
+        # 1. CFTC 日元空头
+        jpy_pct, jpy_diag = _query_jpy_cot(conn)
+        diag['jpy_cot'] = jpy_diag
+        if jpy_pct is not None:
+            if jpy_pct > 90:
+                score += 40
+            elif jpy_pct > 80:
+                score += 25
+            details['JPY_COT_pct'] = jpy_pct
+        else:
+            details['JPY_COT_pct'] = f'N/A ({jpy_diag})'
 
-        # 2. BTC 资金费率历史分位
+        # 2. BTC 资金费率
         try:
             df = pd.read_sql_query(
                 "SELECT value FROM observations WHERE series_id='BTC_FUNDING_RATE_1H' ORDER BY timestamp DESC LIMIT 500",
@@ -83,34 +141,31 @@ def compute_crowding(asof: str) -> dict:
             else:
                 details['BTC_FR_pct'] = 'N/A'
         except Exception as e:
-            details['BTC_FR_pct'] = f'ERR:{str(e)[:20]}'
+            details['BTC_FR_pct'] = f'N/A ({str(e)[:20]})'
 
         # 3. Deribit PCR
-        try:
-            df = pd.read_sql_query(
-                "SELECT pcr FROM deribit_skew ORDER BY rowid DESC LIMIT 1", conn
-            )
-            if not df.empty and pd.notna(df.iloc[0]['pcr']):
-                pcr = float(df.iloc[0]['pcr'])
-                if pcr > 1.2:
-                    score += 20
-                elif pcr > 0.9:
-                    score += 10
-                details['PCR'] = round(pcr, 3)
-            else:
-                details['PCR'] = 'N/A'
-        except Exception as e:
-            details['PCR'] = f'ERR:{str(e)[:20]}'
+        pcr_val, pcr_diag = _query_pcr(conn)
+        diag['pcr'] = pcr_diag
+        if pcr_val is not None:
+            if pcr_val > 1.2:
+                score += 20
+            elif pcr_val > 0.9:
+                score += 10
+            details['PCR'] = round(pcr_val, 3)
+        else:
+            details['PCR'] = f'N/A ({pcr_diag})'
 
-        # 4. 美股 ETF 资金流（TLT 流出 + GLD 流入 = 拥挤切换）
+        # 4. ETF 资金流
         try:
             tlt = _get_pct(conn, 'TLT_VOLUME')
             gld = _get_pct(conn, 'GLD_VOLUME')
-            details['TLT_vol_pct'] = tlt
-            details['GLD_vol_pct'] = gld
+            details['TLT_vol_pct'] = tlt if tlt is not None else 'N/A'
+            details['GLD_vol_pct'] = gld if gld is not None else 'N/A'
             if tlt is not None and gld is not None:
                 if tlt > 80 and gld > 80:
                     score += 10
+                elif tlt > 80 or gld > 80:
+                    score += 5
         except Exception as e:
             details['ETF_flow'] = f'ERR:{str(e)[:20]}'
 
@@ -138,7 +193,8 @@ def compute_crowding(asof: str) -> dict:
         'score': round(score, 1),
         'level': level,
         'action': action,
-        'details': details
+        'details': details,
+        'diag': diag
     }
 
     try:
@@ -165,4 +221,5 @@ if __name__ == '__main__':
     print(f"  评分: {r['score']}/100 ({r['level']})")
     print(f"  建议: {r['action']}")
     print(f"  详情: {r['details']}")
+    print(f"  诊断: {r['diag']}")
     print(f"{'='*60}\n")

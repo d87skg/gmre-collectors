@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""engines_v3/dollar_anchor.py - 美元锚定决策树"""
+"""engines_v3/dollar_anchor.py - 美元锚定决策树（含 LIQUIDITY_SQUEEZE）"""
 import sqlite3
 import pandas as pd
 import json
@@ -86,6 +86,7 @@ def compute_dollar_anchor(asof: str) -> dict:
         except Exception:
             pass
 
+    # 美元状态
     if dxy_pct is not None and dxy_pct < 10:
         dollar_stance = 'STRUCTURALLY_WEAK'
         dollar_msg = f'💵 美元结构性走弱 (5y_pct={dxy_pct:.1f}%)'
@@ -96,12 +97,16 @@ def compute_dollar_anchor(asof: str) -> dict:
         dollar_stance = 'NEUTRAL'
         dollar_msg = f'💵 美元中性 (5y_pct={dxy_pct if dxy_pct else "N/A"})'
 
+    # 四资产情景判定（含流动性挤压）
     if dxy_chg < 0 and wti_chg > 0 and gold_chg > 0 and y10_chg > 0:
         scenario = 'RATE_CUT_FORCED'
         scenario_msg = '🔴 降息倒逼路径（美元弱→油涨/金涨/债跌）'
     elif dxy_chg > 0 and wti_chg < 0 and gold_chg < 0 and y10_chg < 0:
         scenario = 'HIGH_RATE_MAINTAINED'
         scenario_msg = '🟢 高利率维持路径（美元强→油跌/金跌/债涨）'
+    elif dxy_chg < 0 and wti_chg < 0 and gold_chg < 0 and y10_chg < 0:
+        scenario = 'LIQUIDITY_SQUEEZE'
+        scenario_msg = '🚨 流动性挤压（抛售一切换现金，上半场尾部特征）'
     else:
         scenario = 'MIXED'
         scenario_msg = '🟡 混合信号（四资产方向不一致）'

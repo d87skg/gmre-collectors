@@ -1,38 +1,55 @@
 # -*- coding: utf-8 -*-
-"""collectors/move_index.py - MOVE 指数采集（ICE 官方免费 CSV）"""
+"""collectors/move_index.py - MOVE 指数采集（带重试 + 代理支持）"""
 import requests
 import sqlite3
-import csv
-import io
+import time
+import os
 from datetime import datetime, timezone
 
 DB_PATH = 'data/macro.db'
 
-# ICE MOVE 指数 - Yahoo Finance 兜底
 YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/%5EMOVE"
 
+# 从 .env 读取代理配置（如果有）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-def fetch_move():
-    """优先 Yahoo Finance（免费且稳定）"""
-    url = YAHOO_URL
+PROXY = os.environ.get('YAHOO_PROXY', None)
+PROXIES = {"http": PROXY, "https": PROXY} if PROXY else None
+
+
+def fetch_move(retries=3):
     params = {"interval": "1d", "range": "3mo"}
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        result = data.get('chart', {}).get('result', [])
-        if result:
-            timestamps = result[0].get('timestamp', [])
-            closes = result[0].get('indicators', {}).get('quote', [{}])[0].get('close', [])
-            rows = []
-            for ts, c in zip(timestamps, closes):
-                if c is not None:
-                    d = datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d')
-                    rows.append((d, float(c)))
-            return rows
-    except Exception as e:
-        print(f"  ❌ MOVE Yahoo 失败: {e}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+    for attempt in range(retries):
+        try:
+            r = requests.get(YAHOO_URL, params=params, headers=headers,
+                             timeout=30, proxies=PROXIES)
+            r.raise_for_status()
+            data = r.json()
+            result = data.get('chart', {}).get('result', [])
+            if result:
+                timestamps = result[0].get('timestamp', [])
+                closes = result[0].get('indicators', {}).get('quote', [{}])[0].get('close', [])
+                rows = []
+                for ts, c in zip(timestamps, closes):
+                    if c is not None:
+                        d = datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d')
+                        rows.append((d, float(c)))
+                return rows
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"  ⚠️ MOVE 第 {attempt+1}/{retries} 次失败: {str(e)[:60]}，重试...")
+                time.sleep(3)
+            else:
+                print(f"  ❌ MOVE 连续 {retries} 次失败: {str(e)[:60]}")
     return None
 
 
@@ -43,7 +60,7 @@ def main():
 
     rows = fetch_move()
     if not rows:
-        print("  ❌ 无数据")
+        print("  ❌ 无数据（可能网络问题，明天再试）")
         return
 
     conn = sqlite3.connect(DB_PATH)

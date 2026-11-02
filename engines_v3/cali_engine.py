@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""engines_v3/cali_engine.py - CALI 跨资产流动性指数（0-100，越高越危险）"""
+"""engines_v3/cali_engine.py - CALI 跨资产流动性指数"""
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -10,19 +10,24 @@ DB_PATH = 'data/macro.db'
 
 
 def _load(conn, sid, limit=60):
-    for col in ['timestamp', 'date']:
-        try:
-            df = pd.read_sql_query(
-                f"SELECT {col} AS dt, value FROM observations "
-                f"WHERE series_id=? ORDER BY {col} DESC LIMIT ?",
-                conn, params=(sid, limit)
-            )
-            if not df.empty:
-                df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
-                df = df.dropna(subset=['dt']).drop_duplicates(subset=['dt'], keep='first')
-                return df.sort_values('dt').set_index('dt')['value'].astype(float)
-        except Exception:
-            continue
+    """加载序列，兼容 series_id='MOVE' 和 'MOVE_INDEX' 两种写法"""
+    aliases = [sid]
+    if sid == 'MOVE':
+        aliases.append('MOVE_INDEX')
+    for alias in aliases:
+        for col in ['timestamp', 'date']:
+            try:
+                df = pd.read_sql_query(
+                    f"SELECT {col} AS dt, value FROM observations "
+                    f"WHERE series_id=? ORDER BY {col} DESC LIMIT ?",
+                    conn, params=(alias, limit)
+                )
+                if not df.empty:
+                    df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
+                    df = df.dropna(subset=['dt']).drop_duplicates(subset=['dt'], keep='first')
+                    return df.sort_values('dt').set_index('dt')['value'].astype(float)
+            except Exception:
+                continue
     return pd.Series(dtype=float)
 
 
@@ -40,7 +45,6 @@ def compute_cali(asof: str) -> dict:
     score = 0.0
     details = {}
 
-    # 1. 债市流动性（MOVE）
     if len(move) >= 1:
         move_now = float(move.iloc[-1])
         move_vol = float(move.pct_change().tail(20).std()) if len(move) >= 20 else 0
@@ -52,7 +56,6 @@ def compute_cali(asof: str) -> dict:
     else:
         details['MOVE'] = {'value': 'N/A'}
 
-    # 2. 信用流动性（HY 5日斜率）
     if len(hy) >= 5:
         hy_slope = (float(hy.iloc[-1]) - float(hy.iloc[-5])) / 5
         if hy_slope > 0.01:
@@ -61,7 +64,6 @@ def compute_cali(asof: str) -> dict:
     else:
         details['HY_slope'] = 'N/A'
 
-    # 3. 美债曲线（期限溢价）
     if len(y10) >= 1 and len(y2) >= 1:
         term_premium = float(y10.iloc[-1]) - float(y2.iloc[-1])
         if term_premium > 0.30:
@@ -70,7 +72,6 @@ def compute_cali(asof: str) -> dict:
     else:
         details['Term_Premium'] = 'N/A'
 
-    # 4. VIX 极端值
     if len(vix) >= 1:
         vix_now = float(vix.iloc[-1])
         if vix_now > 25:

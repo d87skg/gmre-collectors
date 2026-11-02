@@ -97,7 +97,7 @@ def _read_current_state(conn, asof):
 
 
 def _read_risk_gate(conn, asof):
-    """从 stress + fragility 推算 Risk Gate"""
+    """从 stress + fragility 推算 Risk Gate（修复 CREDIT 误匹配）"""
     try:
         frag = conn.execute(
             "SELECT fragility_score FROM fragility_engine WHERE asof_date=?",
@@ -113,7 +113,8 @@ def _read_risk_gate(conn, asof):
 
         if 'SYSTEMIC' in stress_str:
             return 'BLACK'
-        elif frag_score >= 80 or ('FUNDING' in stress_str and 'CREDIT' in stress_str):
+        # 🆕 修复：严格匹配 CREDIT_STRESS，避免和 USD_CREDIT_DEGRADATION 混淆
+        elif frag_score >= 80 or ('FUNDING_STRESS' in stress_str and 'CREDIT_STRESS' in stress_str):
             return 'RED'
         elif frag_score >= 65 or stress_str.count('+') >= 1:
             return 'ORANGE'
