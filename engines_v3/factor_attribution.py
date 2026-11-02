@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""engines_v3/factor_attribution.py - 极简因子归因与集中度风险（日频对齐版）"""
+"""engines_v3/factor_attribution.py - 极简因子归因（长周期回溯版）"""
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -10,18 +10,18 @@ from sklearn.preprocessing import StandardScaler
 
 DB_PATH = 'data/macro.db'
 
-def _load_daily_series(conn, sid, limit=60):
-    """将任意频率序列降采样为日频（取每天最后一个值），确保对齐"""
+def _load_daily_series(conn, sid, limit=250):
+    """拉取最多250天日频历史，兼容小时线降采样"""
     try:
         df = pd.read_sql_query(
-            f"SELECT timestamp AS dt, value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 2000",
+            f"SELECT timestamp AS dt, value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 5000",
             conn, params=(sid,)
         )
         if not df.empty:
             df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
             df = df.dropna(subset=['dt'])
             df['date_only'] = df['dt'].dt.date
-            # 每天保留最后一条数据
+            # 按天聚合，取最后一条
             df = df.groupby('date_only').last().reset_index()
             df['dt'] = pd.to_datetime(df['date_only'])
             df = df.sort_values('dt').set_index('dt')['value'].astype(float)
@@ -34,11 +34,11 @@ def compute_factor_attribution(asof: str, port_weights: dict) -> dict:
     conn = sqlite3.connect(DB_PATH)
     try:
         assets = {
-            'DXY': _load_daily_series(conn, 'DXY_PROXY', 60),
-            'US10Y': _load_daily_series(conn, 'YC10Y', 60),
-            'SP500': _load_daily_series(conn, 'SP500', 60),
-            'GOLD': _load_daily_series(conn, 'GOLD_PRICE', 60),
-            'BTC': _load_daily_series(conn, 'BTC_SPOT_PRICE_1H', 60),
+            'DXY': _load_daily_series(conn, 'DXY_PROXY', 250),
+            'US10Y': _load_daily_series(conn, 'YC10Y', 250),
+            'SP500': _load_daily_series(conn, 'SP500', 250),
+            'GOLD': _load_daily_series(conn, 'GOLD_PRICE', 250),
+            'BTC': _load_daily_series(conn, 'BTC_SPOT_PRICE_1H', 250),
         }
     finally:
         conn.close()
@@ -51,7 +51,7 @@ def compute_factor_attribution(asof: str, port_weights: dict) -> dict:
     
     rets_df = rets_df.dropna()
     if len(rets_df) < 20:
-        return {'status': 'INSUFFICIENT_DATA', 'msg': f'有效数据仅 {len(rets_df)} 天'}
+        return {'status': 'INSUFFICIENT_DATA', 'msg': f'有效交集仅 {len(rets_df)} 天'}
 
     # PCA
     scaler = StandardScaler()
@@ -59,7 +59,7 @@ def compute_factor_attribution(asof: str, port_weights: dict) -> dict:
     pca = PCA(n_components=3)
     pca.fit(scaled_rets)
     
-    # 计算当前组合收益率
+    # 计算组合收益率
     port_rets = np.zeros(len(rets_df))
     has_weight = False
     for asset, weight in port_weights.items():
@@ -70,7 +70,7 @@ def compute_factor_attribution(asof: str, port_weights: dict) -> dict:
     if not has_weight:
         return {'status': 'NO_POSITION', 'score': 0, 'msg': '纯现金无风险暴露'}
 
-    # 计算 Beta
+    # Beta 计算
     factor_rets = pca.transform(scaled_rets)
     betas = []
     for i in range(3):

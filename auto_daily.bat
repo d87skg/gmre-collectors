@@ -47,6 +47,13 @@ if exist tools\sync_commodity_github.py (.venv\Scripts\python.exe -X utf8 tools\
 echo [8/16] LTI engine...
 if exist engines_v3\lti_engine.py (.venv\Scripts\python.exe -X utf8 engines_v3\lti_engine.py)
 
+:: 🆕 新增微结构数据采集
+echo [8.1/16] Deribit skew collection...
+if exist collectors\deribit_skew.py (.venv\Scripts\python.exe -X utf8 collectors\deribit_skew.py)
+
+echo [8.2/16] Hyperliquid depth collection...
+if exist collectors\hyperliquid_depth.py (.venv\Scripts\python.exe -X utf8 collectors\hyperliquid_depth.py)
+
 echo [8.5/16] Copper spread engine...
 .venv\Scripts\python.exe -X utf8 engines_v3\spread_engine.py
 
