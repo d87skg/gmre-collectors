@@ -1,7 +1,7 @@
 name: Full Cloud Engine (Disaster Recovery)
 
 on:
-  workflow_dispatch:  # 🆕 只有你手动点“Run workflow”它才跑，不再定时打扰你
+  workflow_dispatch:  # 手动触发
 
 permissions:
   contents: write
@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -23,13 +25,12 @@ jobs:
 
       - name: Fetch Real DB Snapshot
         run: |
-          # 🆕 核心修复：从专属分支拉取本地的完整数据库，而不是建空库
-          git fetch origin db-sync || echo "No db-sync branch yet"
+          git fetch origin db-sync
           if git show-ref --verify --quiet refs/remotes/origin/db-sync; then
-            git checkout origin/db-sync -- data/macro.db
-            echo "✅ 成功拉取本地最新完整数据库 macro.db"
+            git show origin/db-sync:data/macro.db > data/macro.db
+            echo "✅ 成功拉取本地最新完整数据库 macro.db (大小: $(du -h data/macro.db | cut -f1))"
           else
-            echo "❌ 找不到灾备数据库，请先在本地执行备份脚本"
+            echo "❌ 找不到灾备数据库，请先在本地执行 backup_to_github.py"
             exit 1
           fi
 
@@ -39,7 +40,6 @@ jobs:
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
           GMRE_PROXY_BASE: ${{ secrets.GMRE_PROXY_BASE }}
         run: |
-          # 此时有了完整的 macro.db，跑出来的结果将和本地一模一样
           python tools/sync_feishu_snapshot.py || echo "Sync failed"
           python tools/apply_feishu_override.py || echo "Override failed"
           python tools/compute_percentile.py || echo "Percentile failed"
