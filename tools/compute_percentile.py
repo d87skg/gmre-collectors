@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/compute_percentile.py - 直接从 observations 计算历史分位"""
+"""tools/compute_percentile.py - 直接从 observations 计算历史分位（修复长度不足与重复时间戳）"""
 import sqlite3
 import pandas as pd
 import os
@@ -17,7 +17,6 @@ SERIES_MAP = {
     'JP_10Y': 'JP_10Y', 'JP_CPI_YOY': 'JP_CPI_YOY', 'DE_10Y': 'DE_10Y', 'EU_HICP_YOY': 'EU_HICP_YOY',
     'USD_JPY': 'USD_JPY', 'EUR_USD': 'EUR_USD', 'USDCNY_MID': 'USDCNY_MID',
     'BTC_FUNDING_RATE_1H': 'BTC_FUNDING_RATE_1H', 'BTC_OI_VALUE_HIST': 'BTC_OI_VALUE_HIST'
-    # 🆕 P2.5：移除 US_CPI_YOY、US_10Y_YIELD_BOND（已废弃）
 }
 
 SANITY_CHECKS = {
@@ -27,13 +26,19 @@ SANITY_CHECKS = {
     'CN_M1_YOY': (-30, 50), 'CN_M2_YOY': (-10, 50), 'CN_PMI_MFG': (30, 70),
     'CN_10Y_YIELD': (0, 10), 'JP_10Y': (-1, 10), 'JP_CPI_YOY': (-5, 20),
     'DE_10Y': (-2, 15), 'EU_HICP_YOY': (-5, 20), 'USD_JPY': (50, 300), 'EUR_USD': (0.5, 2.0),
-    'USDCNY_MID': (5.0, 10.0)  # 👈 核心修复：增加人民币汇率拦截，大于 10 的直接拦截
+    'USDCNY_MID': (5.0, 10.0)
 }
 
 def calc_pct_z(series, window):
+    # 🆕 核心修复：如果数据量不足窗口的 70%，说明数据断档严重，不计算分位
+    if len(series) < window * 0.7:
+        return None, None
     sub = series.tail(window) if len(series) >= window else series
-    if len(sub) < 5: return None, None
+    if len(sub) < 5: 
+        return None, None
+    
     latest = float(series.iloc[-1])
+    # 计算严格小于当前值的比例
     pct = float((sub < latest).mean() * 100)
     mean = float(sub.mean())
     std = float(sub.std())
@@ -51,10 +56,14 @@ def main():
     for sid, mapped in targets:
         df = pd.read_sql_query("SELECT timestamp AS dt, value FROM observations WHERE series_id=? ORDER BY timestamp", conn, params=(sid,))
         if df.empty: continue
-        # 核心修复：使用 format='mixed' 消除 UserWarning
+        
+        # 核心修复：使用 format='mixed'，强制截断 T 后面的时分秒，并按自然日去重
         df['dt'] = pd.to_datetime(df['dt'], format='mixed', errors='coerce')
-        df = df.dropna(subset=['dt', 'value']).drop_duplicates(subset=['dt'], keep='first')
+        df['dt'] = df['dt'].dt.strftime('%Y-%m-%d')
+        df = df.dropna(subset=['dt', 'value'])
+        df = df.drop_duplicates(subset=['dt'], keep='first') # 同一天保留第一条
         df = df.sort_values('dt').set_index('dt')['value'].astype(float)
+        
         if len(df) < 20: continue
         
         if mapped not in best or len(df) > len(best[mapped][1]):
@@ -62,7 +71,7 @@ def main():
 
     print(f"🎯 将计算 {len(best)} 个映射序列的分位\n")
     for mapped, (sid, series) in best.items():
-        latest_date = series.index[-1].strftime('%Y-%m-%d')
+        latest_date = series.index[-1]
         latest_value = float(series.iloc[-1])
         
         if mapped in SANITY_CHECKS or sid in SANITY_CHECKS:
@@ -79,8 +88,13 @@ def main():
         is_fallback = (sid != mapped) and (mapped == 'RRP' and sid != 'RRPONTSYD')
         tag = " (降级)" if is_fallback else ""
         
+        p1_str = f"{pct_1y:>6}" if pct_1y is not None else "   N/A"
+        p5_str = f"{pct_5y:>6}" if pct_5y is not None else "   N/A"
+        
         flag = "🔴" if (pct_5y is not None and pct_5y > 90) else "🟡" if (pct_5y is not None and pct_5y > 70) else "🟢"
-        print(f"  {flag} {mapped:20s}{tag} (源:{sid:18s}) 值={latest_value:>12.4f}  1y_pct={pct_1y if pct_1y else 'N/A':>6}  5y_pct={pct_5y if pct_5y else 'N/A':>6}")
+        if pct_5y is None: flag = "⚪"
+        
+        print(f"  {flag} {mapped:20s}{tag} (源:{sid:18s}) 值={latest_value:>12.4f}  1y_pct={p1_str}  5y_pct={p5_str}  (总历史:{len(series)}条)")
 
     conn.commit()
     conn.close()

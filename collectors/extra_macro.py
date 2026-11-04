@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""collectors/extra_macro.py - 全量扩展（v3：市场广度20D动量 + 实时10Y美债入库）"""
+"""collectors/extra_macro.py - 全量扩展（v3.1：拉取5年历史以支持正确分位计算）"""
 import sys
 import requests
 import pandas as pd
@@ -49,7 +49,8 @@ def save_realtime_us10y(value: float, quote_time_bj: str, source='Tradeweb'):
 
 def fetch_yahoo(symbol, series_id):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    params = {"interval": "1d", "range": "1mo"}  # 拿一个月的数据来算20日变化
+    # 🆕 核心修复：将 range 从 1mo 改为 5y，为分位数计算提供足够长的历史窗口
+    params = {"interval": "1d", "range": "5y"} 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         r = requests.get(url, params=params, headers=headers, timeout=15)

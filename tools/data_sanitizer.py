@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/data_sanitizer.py - 全局数据清洗漏斗（P2.5 强化版）"""
+"""tools/data_sanitizer.py - 全局数据清洗漏斗（P2.5 强化版 + 黄金数据清洗）"""
 import sqlite3
 import pandas as pd
 from datetime import datetime
@@ -20,11 +20,61 @@ def sanitize_usdcny(conn):
         print(f"  ✅ [清洗] USDCNY_MID 量纲正常")
 
 
-def sanitize_us_cpi_yoy(conn):
-    """🆕 P2.5：US_CPI_YOY 语义不明，全面废弃
-    原因：数据源存的是某个 CPI 子项（14.32%），不是"美国 CPI 同比"
-    与 MICH_1Y=4.6% / T5YIE=2.47% 严重矛盾，且不参与任何核心引擎
+def sanitize_gold_history(conn):
+    """🆕 清洗黄金数据的混合时间戳与多源重复
+    原因：历史数据混入了 2026-10-22T00:13:00 等带时间戳的数据，
+    且截断时容易触发 (series_id, timestamp) 唯一约束冲突。
     """
+    cursor = conn.cursor()
+    try:
+        # 1. 删除冲突项：带 T 的记录如果对应的纯日期已存在，直接删掉带 T 的
+        cursor.execute("""
+            DELETE FROM observations 
+            WHERE series_id='GOLD_PRICE' 
+              AND timestamp LIKE '%T%'
+              AND substr(timestamp, 1, 10) IN (
+                  SELECT timestamp FROM observations 
+                  WHERE series_id='GOLD_PRICE' AND timestamp NOT LIKE '%T%'
+              )
+        """)
+        conflict_deleted = cursor.rowcount
+
+        # 2. 现在剩下的带 T 的记录，可以安全截断了
+        cursor.execute("""
+            UPDATE observations 
+            SET timestamp = substr(timestamp, 1, 10) 
+            WHERE series_id='GOLD_PRICE' AND timestamp LIKE '%T%'
+        """)
+        t_fixed = cursor.rowcount
+        
+        # 3. 兜底去重：如果截断后同一天还有多条（比如两条都带 T），只保留最新 rowid
+        cursor.execute("""
+            DELETE FROM observations 
+            WHERE series_id='GOLD_PRICE' 
+              AND rowid NOT IN (
+                  SELECT MAX(rowid) FROM observations 
+                  WHERE series_id='GOLD_PRICE' 
+                  GROUP BY substr(timestamp, 1, 10)
+              )
+        """)
+        dups_deleted = cursor.rowcount
+        
+        # 4. 剔除异常值（比如小于 1000 或大于 10000 的脏数据）
+        cursor.execute("""
+            DELETE FROM observations 
+            WHERE series_id='GOLD_PRICE' AND (value < 1000 OR value > 10000)
+        """)
+        outliers_deleted = cursor.rowcount
+        
+        conn.commit()
+        print(f"  ✅ [清洗] GOLD_PRICE 修复: 解决冲突 {conflict_deleted} 条 | 时间戳截断 {t_fixed} 条 | 兜底去重 {dups_deleted} 条 | 剔除异常 {outliers_deleted} 条")
+    except Exception as e:
+        print(f"  ⚠️ 黄金清洗失败: {e}")
+        conn.rollback()
+
+
+def sanitize_us_cpi_yoy(conn):
+    """🆕 P2.5：US_CPI_YOY 语义不明，全面废弃"""
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM observations WHERE series_id='US_CPI_YOY'")
     count = cursor.fetchone()[0]
@@ -37,10 +87,7 @@ def sanitize_us_cpi_yoy(conn):
 
 
 def sanitize_us_10y_yield_bond(conn):
-    """🆕 P2.5：US_10Y_YIELD_BOND 与 YC10Y 双源冲突，废弃 AKShare 版本
-    原因：AKShare 的 5.27% vs Treasury 官方 YC10Y 的 5.05%，差 22bp
-    YC10Y 才是真理源（DGS10 数据），AKShare 版本是重复污染
-    """
+    """🆕 P2.5：US_10Y_YIELD_BOND 与 YC10Y 双源冲突，废弃 AKShare 版本"""
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM observations WHERE series_id='US_10Y_YIELD_BOND'")
     count = cursor.fetchone()[0]
@@ -53,10 +100,7 @@ def sanitize_us_10y_yield_bond(conn):
 
 
 def sanitize_reverse_repo_fred(conn):
-    """🆕 P2.5：REVERSE_REPO_FRED 单位归一化
-    原因：FRED 的 WLRRAL 序列是"百万美元"单位，与 NYFed 的"十亿美元"差 1000 倍
-    统一换算成"十亿美元"，与 NYFed 一致
-    """
+    """🆕 P2.5：REVERSE_REPO_FRED 单位归一化 (百万美元->十亿美元)"""
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM observations WHERE series_id='REVERSE_REPO_FRED' AND value > 1000")
     count = cursor.fetchone()[0]
@@ -104,7 +148,13 @@ def align_rrp_source(conn):
             else:
                 print(f"  ✅ [清洗] RRP 数据源偏差在合理范围内")
         else:
-            print(f"  ⚠️ [清洗] 找不到同日期的 FRED RRP 数据，跳过对齐")
+            # 如果飞书数据没过来，直接把 NYFed 的数据同步给 RRP_BALANCE，防止其他引擎瞎眼
+            cursor.execute("""
+                INSERT OR REPLACE INTO observations (series_id, timestamp, value, source, retrieved_at)
+                VALUES ('RRP_BALANCE', ?, ?, 'NYFED_SYNC', datetime('now'))
+            """, (nyfed_date, nyfed_val))
+            conn.commit()
+            print(f"  🧼 [清洗] RRP 真理源对齐: FRED 缺失，已强行缝合 NYFed ({nyfed_val:.2f}) 至 RRP_BALANCE")
     else:
         print(f"  ⚠️ [清洗] 找不到 NYFed RRP 数据，跳过对齐")
 
@@ -112,12 +162,13 @@ def align_rrp_source(conn):
 def main():
     print(f"\n{'='*60}")
     print(f"  🧼 GMRE 全局数据清洗漏斗 - {datetime.now().strftime('%Y-%m-%d')}")
-    print(f"  （P2.5：废弃 3 个脏数据源 + 保留原有 4 项检查）")
+    print(f"  （P2.5：废弃 3 个脏数据源 + 黄金时间戳去重 + 原有 4 项检查）")
     print(f"{'='*60}\n")
     
     conn = sqlite3.connect(DB_PATH, timeout=15)
     try:
         sanitize_usdcny(conn)
+        sanitize_gold_history(conn)        # 🆕 新增：黄金时间戳统一与去重
         sanitize_us_cpi_yoy(conn)          # 🆕 P2.5
         sanitize_us_10y_yield_bond(conn)   # 🆕 P2.5
         sanitize_reverse_repo_fred(conn)   # 🆕 P2.5
