@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""collectors/extra_macro.py - 全量扩展（v3.1：拉取5年历史以支持正确分位计算）"""
+"""collectors/extra_macro.py - 全量扩展（v3.2：拉取5年历史以支持正确分位计算）"""
 import sys
 import requests
 import pandas as pd
