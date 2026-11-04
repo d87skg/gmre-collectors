@@ -106,10 +106,13 @@ def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_con
 def get_dual_phase_guide(gate, frag_score, cali_score, scenario, dxy_pct):
     if cali_score and cali_score >= 60:
         phase, emoji = '上半场（去杠杆中）', '🔴'
-    elif dxy_pct and dxy_pct < 10:
+    elif dxy_pct is not None and dxy_pct < 10:
         phase, emoji = '上半场尾部（流动性枯竭末期）', '🟠'
     elif gate in ('ORANGE', 'YELLOW'):
         phase, emoji = '过渡期（政策底已现，市场底待确认）', '🟡'
+    # 🆕 新增：如果 DXY 数据缺失（云端常见），强制视为防守期，绝不瞎喊“下半场”
+    elif dxy_pct is None:
+        phase, emoji = '过渡期（数据缺失，默认防守）', '🟡'
     else:
         phase, emoji = '下半场（降息重估）', '🟢'
 
