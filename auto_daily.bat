@@ -13,6 +13,9 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+echo [1.5/16] Realtime market data (SP500/VIX override)...
+.venv\Scripts\python.exe -X utf8 collectors\realtime_market.py
+
 echo [2/16] Enhanced liquidity data...
 if exist collectors\enhanced_data.py (.venv\Scripts\python.exe -X utf8 collectors\enhanced_data.py)
 
