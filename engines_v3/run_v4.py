@@ -1,4 +1,4 @@
-"""engines_v3/run_v4.py - GMRE 4.1 完整集成版（日频决策口径唯一 + 盘中实时参考）"""
+"""engines_v3/run_v4.py - GMRE 4.1 完整集成版（日频决策口径唯一 + 盘中实时参考 + 影子引擎）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -471,6 +471,26 @@ def main():
         print(f"  💡 {phase_guide['note']}")
     except Exception as e:
         print(f"  ⚠️ 双阶段指南异常: {e}")
+
+    # =========================================================================
+    # 🧪 影子模式（Shadow Mode）：不干预生产，仅内部跑一次风险预算验证
+    # =========================================================================
+    try:
+        from engines_v3.risk_budget_engine import compute_shadow_weights
+        print(f"\n┌{'─'*58}┐\n│  🧪 [Shadow Mode] 风险预算影子引擎测试              │\n└{'─'*58}┘")
+        shadow_weights = compute_shadow_weights(gate)
+        
+        if shadow_weights:
+            # 写入本地日志，供以后复盘
+            log_dir = "logs"
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, "shadow_portfolio.log")
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{asof}] Gate={gate} | Shadow_Weights={shadow_weights}\n")
+            print(f"  ✅ 影子权重已静默保存至 {log_file}")
+    except Exception as e:
+        print(f"  ⚠️ 影子引擎计算失败 (不影响主流程): {e}")
+    # =========================================================================
 
     _regime_display = "N/A"
     try:
