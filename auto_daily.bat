@@ -2,6 +2,18 @@
 chcp 65001 >nul
 cd /d D:\HGZC
 
+:: 自动创建 logs 文件夹（如果不存在）
+if not exist "logs" mkdir "logs"
+
+:: 获取当前日期并生成日志文件名
+for /f "tokens=1-3 delims=/ " %%a in ('date /t') do set datestr=%%c-%%a-%%b
+set logfile=logs\pipeline_%datestr%.log
+
+:: 将后续所有输出重定向到屏幕和日志文件
+echo ======================================================== >> %logfile%
+echo   Run at %time% >> %logfile%
+echo ======================================================== >> %logfile%
+
 echo ========================================================
 echo   GMRE 4.0 Daily Pipeline
 echo ========================================================
@@ -85,4 +97,6 @@ echo [13/16] Push to Feishu...
 echo ========================================================
 echo   Pipeline completed successfully
 echo ========================================================
+echo ======================================================== >> %logfile%
+echo   Pipeline completed >> %logfile%
 pause
