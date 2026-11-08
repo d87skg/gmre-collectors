@@ -1,5 +1,5 @@
 """engines_v3/fragility_engine.py - Fragility Engine (F0-F5)
-[v5 - 宏观分位校准 + 相关性突变 + 飞书微观全量接入]
+[v6 - 剥离双重计数(共线性) + 维度精简 + 飞书微观全量接入]
 """
 import sqlite3
 import pandas as pd
@@ -46,14 +46,15 @@ def _scale(value, lo, hi):
     except Exception:
         return 50.0
 
-# ============ 10 个维度 ============
+# ============ 9 个维度（已剔除冗余与双算）============
 
 def calc_liquidity(conn):
+    """流动性维度：只看 RRP 和 准备金，剥离 SOFR-EFFR"""
     rrp = _load(conn, 'RRP_BALANCE', 30)
     res = _load(conn, 'RESERVE_BALANCE', 30)
-    sofr = _load(conn, 'SOFR', 30)
-    effr = _load(conn, 'EFFR', 30)
     score, comp = 0.0, {}
+    count = 0
+    
     if len(rrp) >= 1:
         pct = _get_pct(conn, 'RRP')
         if pct is not None:
@@ -61,25 +62,23 @@ def calc_liquidity(conn):
         else:
             s = _scale(2000 - float(rrp.iloc[-1]), 0, 2000)
         comp['RRP'] = round(s, 1)
-        score += s * 0.4
+        score += s * 0.60  # 权重从 0.4 提升至 0.6
+        count += 1
 
     if len(res) >= 5:
         r_now, r_4w = float(res.iloc[-1]), float(res.iloc[-min(4, len(res))])
         chg = (r_now - r_4w) / r_4w if r_4w else 0
         s = _scale(-chg, -0.05, 0.05)
         comp['Reserves'] = round(s, 1)
-        score += s * 0.3
+        score += s * 0.40  # 权重从 0.3 提升至 0.4
+        count += 1
 
-    if len(sofr) >= 1 and len(effr) >= 1:
-        spread = (float(sofr.ffill().iloc[-1]) - float(effr.ffill().iloc[-1])) * 100
-        s = _scale(spread, -2, 10)
-        comp['SOFR-EFFR'] = round(s, 1)
-        score += s * 0.3
-
+    if count == 0:
+        return 50.0, {'Status': 'NoData'}
     return min(score, 100), comp
 
 def calc_leverage(conn):
-    """杠杆维度 [v3: JPY 波动率加入周末过滤]"""
+    """杠杆维度：JPY波动率 + VIX波动率 (合并了原 market_depth)"""
     vix = _load(conn, 'VIX', 60)
     jpy = _load(conn, 'USD_JPY', 60)
     score, comp = 0.0, {}
@@ -90,9 +89,9 @@ def calc_leverage(conn):
         if len(jpy_clean) >= 21:
             vol = float(jpy_clean.pct_change().tail(20).std() * (252 ** 0.5))
             if not pd.isna(vol) and vol > 0:
-                s = _scale(vol, 0.03, 0.15) # 下限调整，避免长期为 0
+                s = _scale(vol, 0.03, 0.15) 
                 comp['JPY_Vol'] = round(s, 1)
-                score += s * 0.6
+                score += s * 0.50
             else:
                 comp['JPY_Vol'] = f'ZeroVol({vol:.6f})'
         else:
@@ -100,30 +99,31 @@ def calc_leverage(conn):
     else:
         comp['JPY_Vol'] = f'NoData({len(jpy)}条)'
 
-    # VIX 波动率（VIX 本身是工作日数据，无需过滤）
+    # VIX 波动率
     if len(vix) >= 20:
         vol = float(vix.pct_change().tail(20).std())
         if not pd.isna(vol):
             s = _scale(vol, 0.02, 0.08)
             comp['VIX_Vol'] = round(s, 1)
-            score += s * 0.4
+            score += s * 0.50
 
     return min(score, 100), comp
 
 def calc_funding(conn):
+    """资金面维度：只看 SOFR-EFFR，剥离准备金"""
     sofr = _load(conn, 'SOFR', 30)
     effr = _load(conn, 'EFFR', 30)
-    res = _load(conn, 'RESERVE_BALANCE', 30)
     score, comp = 0.0, {}
+    
     if len(sofr) >= 5 and len(effr) >= 5:
         spread = (float(sofr.ffill().iloc[-1]) - float(effr.ffill().iloc[-1])) * 100
         s = _scale(spread, -2, 10)
         comp['Spread'] = round(s, 1)
-        score += s * 0.5
-    if len(res) >= 5:
-        s = _scale(3200000 - float(res.iloc[-1]), 0, 400000)
-        comp['Reserves'] = round(s, 1)
-        score += s * 0.5
+        score += s * 1.0  # 权重 1.0
+    else:
+        comp['Spread'] = 'NoData'
+        score = 50.0
+        
     return min(score, 100), comp
 
 def calc_crowding(conn):
@@ -186,7 +186,7 @@ def calc_valuation(conn):
     return min(score, 100), comp
 
 def calc_correlation(conn):
-    """跨资产相关性维度 [v2: 加入相关性突变信号]"""
+    """跨资产相关性维度"""
     try:
         df = pd.read_sql_query(
             "SELECT avg_corr_20d, corr_break FROM contagion_engine "
@@ -238,16 +238,8 @@ def calc_policy(conn):
 
     return min(score, 100), comp
 
-def calc_market_depth(conn):
-    vix = _load(conn, 'VIX', 60)
-    if len(vix) >= 20:
-        vol = float(vix.pct_change().tail(20).std())
-        s = _scale(vol, 0.02, 0.08)
-        return s, {'VIX_Disp': round(s, 1)}
-    return 50.0, {'VIX_Disp': 50.0}
-
 def calc_crypto_micro(conn):
-    """Crypto 微观结构脆弱性 [v4: 修复类型转换 + 接入飞书 HL 极度失衡]"""
+    """Crypto 微观结构脆弱性"""
     try:
         # 优先从 feishu_snapshot 读取（包含极端的 HL 深度和 FR）
         df_f = pd.read_sql_query(
@@ -303,17 +295,16 @@ def calc_crypto_micro(conn):
     except Exception as e:
         return 50.0, {'Error': str(e)[:30]}
 
-# ============ 维度注册（权重总和 = 1.00）============
+# ============ 9个维度注册（权重总和已重新平衡为 1.00）============
 DIMENSIONS = [
-    ('Liquidity',    calc_liquidity,    0.15),
-    ('Leverage',     calc_leverage,     0.15),
-    ('Funding',      calc_funding,      0.10),
+    ('Liquidity',    calc_liquidity,    0.16),
+    ('Leverage',     calc_leverage,     0.16),
+    ('Funding',      calc_funding,      0.11),
     ('Crowding',     calc_crowding,     0.10),
     ('Mismatch',     calc_mismatch,     0.10),
     ('Valuation',    calc_valuation,    0.10),
     ('Correlation',  calc_correlation,  0.08),
-    ('Policy',       calc_policy,       0.10),
-    ('MarketDepth',  calc_market_depth, 0.07),
+    ('Policy',       calc_policy,       0.09),
     ('Crypto_Micro', calc_crypto_micro, 0.10),
 ]
 
@@ -396,9 +387,8 @@ def compute_fragility(asof: str) -> dict:
             for i, (k, v) in enumerate(items):
                 prefix = "    └─" if i == len(items) - 1 else "    ├─"
                 if n == 'Liquidity':
-                    if k == 'RRP': weight_str = "(40%)"
-                    elif k == 'Reserves': weight_str = "(30%)"
-                    elif k == 'SOFR-EFFR': weight_str = "(30%)"
+                    if k == 'RRP': weight_str = "(60%)"
+                    elif k == 'Reserves': weight_str = "(40%)"
                     else: weight_str = ""
                     print(f"{prefix} {k:12s} {weight_str:6s}: {v}")
                 else:

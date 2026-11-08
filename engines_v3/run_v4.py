@@ -1,4 +1,4 @@
-"""engines_v3/run_v4.py - GMRE 4.1 完整集成版（日频决策口径唯一 + 盘中实时参考 + 影子引擎 + NaN冻结保护）"""
+"""engines_v3/run_v4.py - GMRE 4.1 完整集成版（配置化阈值 + NaN冻结保护 + 影子引擎）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import re
+import yaml
 from datetime import datetime
 
 from engines_v2 import (
@@ -65,7 +66,7 @@ def get_series_meta(sid, override_value=None):
 
 
 def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_confirmed, p_r4_r5=None):
-    """Risk Gate v4.4 - 日频决策口径"""
+    """Risk Gate v4.5 - 配置化阈值版"""
     if frag_level == 'N/A' or frag_level is None:
         return 'UNKNOWN', '🚨 数据缺失：Fragility 状态无法计算'
     try:
@@ -78,27 +79,41 @@ def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_con
     if systemic_confirmed:
         return 'BLACK', '🚨 系统性危机已确认'
 
+    # 🆕 核心修复：从 YAML 读取阈值，彻底消灭魔法数
+    cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'risk_limits.yaml')
+    try:
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            risk_cfg = yaml.safe_load(f).get('risk_gate', {})
+    except Exception:
+        risk_cfg = {}
+        
+    red_frag = risk_cfg.get('red', {}).get('frag_score', 80)
+    red_prob = risk_cfg.get('red', {}).get('p_r4_r5', 0.50)
+    org_frag = risk_cfg.get('orange', {}).get('frag_score', 65)
+    org_prob = risk_cfg.get('orange', {}).get('p_r4_r5', 0.30)
+    yel_frag = risk_cfg.get('yellow', {}).get('frag_score', 50)
+
     red_reasons = []
-    if frag_score >= 80:
-        red_reasons.append(f"Fragility={frag_score:.1f}≥80")
+    if frag_score >= red_frag:
+        red_reasons.append(f"Fragility={frag_score:.1f}≥{red_frag}")
     if 'FUNDING_STRESS' in stress_overall and 'CREDIT_STRESS' in stress_overall:
         red_reasons.append("FUNDING+CREDIT_STRESS 共振")
-    if p_r4_r5 is not None and p_r4_r5 >= 0.50:
-        red_reasons.append(f"P(R4+R5)={p_r4_r5*100:.1f}%≥50%")
+    if p_r4_r5 is not None and p_r4_r5 >= red_prob:
+        red_reasons.append(f"P(R4+R5)={p_r4_r5*100:.1f}%≥{red_prob*100:.0f}%")
     if red_reasons:
         return 'RED', f'🔴 高风险：{", ".join(red_reasons)}'
 
     orange_reasons = []
-    if frag_score >= 65:
-        orange_reasons.append(f"Fragility={frag_score:.1f}≥65")
+    if frag_score >= org_frag:
+        orange_reasons.append(f"Fragility={frag_score:.1f}≥{org_frag}")
     if stress_overall.count('+') >= 1:
         orange_reasons.append(f"Stress={stress_overall}")
-    if p_r4_r5 is not None and p_r4_r5 >= 0.30:
-        orange_reasons.append(f"P(R4+R5)={p_r4_r5*100:.1f}%≥30%")
+    if p_r4_r5 is not None and p_r4_r5 >= org_prob:
+        orange_reasons.append(f"P(R4+R5)={p_r4_r5*100:.1f}%≥{org_prob*100:.0f}%")
     if orange_reasons:
         return 'ORANGE', f'🟠 中高风险：{", ".join(orange_reasons)}'
 
-    if frag_score >= 50:
+    if frag_score >= yel_frag:
         return 'YELLOW', f'🟡 中等：Fragility={frag_score:.1f}'
     return 'GREEN', f'🟢 低风险：Fragility={frag_score:.1f}'
 
@@ -110,7 +125,6 @@ def get_dual_phase_guide(gate, frag_score, cali_score, scenario, dxy_pct):
         phase, emoji = '上半场尾部（流动性枯竭末期）', '🟠'
     elif gate in ('ORANGE', 'YELLOW'):
         phase, emoji = '过渡期（政策底已现，市场底待确认）', '🟡'
-    # 🆕 新增：如果 DXY 数据缺失（云端常见），强制视为防守期，绝不瞎喊“下半场”
     elif dxy_pct is None:
         phase, emoji = '过渡期（数据缺失，默认防守）', '🟡'
     else:

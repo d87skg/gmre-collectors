@@ -2,8 +2,19 @@
 import sqlite3
 import pandas as pd
 import numpy as np
+import yaml
+import os
 
 DB_PATH = 'data/macro.db'
+
+def load_config():
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'risk_limits.yaml')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f)
+    except Exception as e:
+        print(f"⚠️ 无法读取 risk_limits.yaml，使用默认值: {e}")
+        return None
 
 def get_data_health():
     try:
@@ -25,54 +36,55 @@ def get_data_health():
 
 
 def get_portfolio_advice(risk_gate, frag_score, caps_cu=0):
+    cfg = load_config()
+    if cfg:
+        cfg_opt = cfg.get('portfolio_optimizer', {})
+        base_cash_red = cfg_opt.get('base_cash', {}).get('red', 0.60)
+        target_vol_red = cfg_opt.get('target_vol', {}).get('red', 0.03)
+        # ... 你可以自行扩展其他状态
+        caps_floor = cfg_opt.get('caps_copper_cash_floor', 0.50)
+        frag_add = cfg_opt.get('frag_score_cash_add', 0.10)
+        max_w = cfg_opt.get('max_single_asset_weight', 15.0)
+        duration = cfg_opt.get('us10y_duration', 7.5)
+    else:
+        # 兜底默认值
+        base_cash_red, target_vol_red = 0.60, 0.03
+        caps_floor, frag_add, max_w, duration = 0.50, 0.10, 15.0, 7.5
+
     conn = sqlite3.connect(DB_PATH)
     assets = {'BTC': 'BTC_SPOT_PRICE_1H', 'GOLD': 'GOLD_PRICE', 'US10Y': 'YC10Y'}
     vols = {}
     
-    # 🆕 核心修复：久期参数。10年期美债久期大约在 7.5 - 8 左右
-    DURATION_10Y = 7.5 
-    
     for name, sid in assets.items():
-        # 🆕 核心修复：改为 ASC 正序，方便计算真实的差分和收益率
         df = pd.read_sql_query(f"SELECT timestamp, value FROM observations WHERE series_id='{sid}' ORDER BY timestamp ASC LIMIT 30", conn)
-        
         if len(df) > 5:
-            # 🆕 防断更：前向填充，防止周末导致 NaN
             s = df['value'].ffill()
-            
             if name == 'US10Y':
-                # 🆕 核心修复：收益率的百分比变化是错的。必须转为债券价格收益率 = -久期 * 收益率变动
-                # 注意：数据库里的收益率一般是 4.84 这种格式，除 100 换算为小数
                 yield_diff = s.diff() / 100.0 
-                bond_returns = -DURATION_10Y * yield_diff
+                bond_returns = -duration * yield_diff
                 vol = bond_returns.dropna().std()
             else:
-                # 股票/黄金/BTC 依然用正常的价格百分比变化
                 vol = s.pct_change().dropna().std()
-                
             vols[name] = vol if pd.notna(vol) and np.isfinite(vol) else 0.02
         else:
             vols[name] = 0.02
-            
     conn.close()
 
     if risk_gate == 'RED':
-        target_vol, base_cash = 0.03, 0.60
+        target_vol, base_cash = target_vol_red, base_cash_red
     elif risk_gate == 'ORANGE':
         target_vol, base_cash = 0.08, 0.30
     else:
         target_vol, base_cash = 0.15, 0.10
 
-    # 如果沪铜极值逼仓，强行将现金比例拉高到 50% 以上
     if caps_cu >= 80:
-        base_cash = max(base_cash, 0.50)
+        base_cash = max(base_cash, caps_floor)
         target_vol *= 0.5
 
     if frag_score > 60:
-        base_cash += 0.10
+        base_cash += frag_add
         target_vol *= 0.8
 
-    # 逆波动率加权
     inv_vols = {k: 1/v if v > 1e-6 else 50 for k, v in vols.items()}
     total_inv_vol = sum(inv_vols.values())
     total_risk_assets_weight = 1.0 - base_cash
@@ -84,16 +96,14 @@ def get_portfolio_advice(risk_gate, frag_score, caps_cu=0):
         scale = (total_risk_assets_weight * 100) / current_total
         weights = {k: round(v * scale, 1) for k, v in weights.items()}
 
-    # 核心硬性风控：Gate 为 RED 或 沪铜逼仓时，单一资产不超过 15%
     if risk_gate == 'RED' or caps_cu >= 80:
         excess_sum = 0.0
         for asset, w in weights.items():
-            if w > 15.0:
-                excess_sum += (w - 15.0)
-                weights[asset] = 15.0
+            if w > max_w:
+                excess_sum += (w - max_w)
+                weights[asset] = max_w
         if excess_sum > 0:
             base_cash += (excess_sum / 100.0)
-            # 把打印信息改得稍微专业一点
-            print(f"⚠️ [风控硬截断] 单一资产超过 15% 红线，已强制剥离 {excess_sum:.1f}% 至现金。")
+            print(f"⚠️ [风控硬截断] 单一资产超过 {max_w}% 红线，已强制剥离 {excess_sum:.1f}% 至现金。")
 
     return weights, round(base_cash * 100, 1)

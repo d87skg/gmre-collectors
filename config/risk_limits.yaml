@@ -1,0 +1,26 @@
+# config/risk_limits.yaml
+# 🚨 GMRE 4.1 核心风控阈值配置（修改此文件后需重启流水线生效）
+
+risk_gate:
+  red:
+    frag_score: 80
+    p_r4_r5: 0.50
+  orange:
+    frag_score: 65
+    p_r4_r5: 0.30
+  yellow:
+    frag_score: 50
+
+portfolio_optimizer:
+  base_cash:
+    red: 0.60
+    orange: 0.30
+    green: 0.10
+  target_vol:
+    red: 0.03
+    orange: 0.08
+    green: 0.15
+  caps_copper_cash_floor: 0.50  # 沪铜逼仓时的现金底线
+  frag_score_cash_add: 0.10     # 脆弱性>60时的额外现金
+  max_single_asset_weight: 15.0 # 单一资产红线 (百分比)
+  us10y_duration: 7.5           # 美债久期假设
