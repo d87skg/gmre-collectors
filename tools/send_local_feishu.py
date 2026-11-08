@@ -40,7 +40,7 @@ def get_latest_data():
         'bitget_fr': 0.0, 'coinbase_prem': 0.0, 'hl_imb': 0.0,
         'btc_etf_flow': 0.0, 'fear_greed': 0,
         'lti_raw_fr': 0.0, 'lti_raw_imb': 0.0,
-        'gold': 0.0, 'silver': 0.0, 'oil': 0.0, 'copper': 0.0,
+        'gold': 'N/A', 'silver': 'N/A', 'oil': 'N/A', 'copper': 'N/A',
         'dxy': 0.0, 'usdjpy': 0.0, 'usdcny': 0.0, 'usdcnh': 0.0, 'spx': 0.0,
         'cn10y': 0.0, 'jp10y': 0.0, 'de10y': 0.0,
         'us_cn_spread': 0.0, 'us_jp_spread': 0.0, 'us_de_spread': 0.0,
@@ -384,8 +384,8 @@ def main():
   • BTC: {weights.get('BTC', 0):.1f}% | 黄金: {weights.get('GOLD', 0):.1f}% | 美债: {weights.get('US10Y', 0):.1f}%
 
 🌍 **大类资产与汇率矩阵**:
-  • 黄金: ${d['gold']:.2f} | 白银: ${d['silver']:.2f}
-  • 原油 (WTI): ${d['oil']:.2f} | 铜: ${d['copper']:.2f}
+  • 黄金: ${d['gold'] if isinstance(d['gold'], str) else f"{d['gold']:.2f}"} | 白银: ${d['silver'] if isinstance(d['silver'], str) else f"{d['silver']:.2f}"}
+  • 原油 (WTI): ${d['oil'] if isinstance(d['oil'], str) else f"{d['oil']:.2f}"} | 铜: ${d['copper'] if isinstance(d['copper'], str) else f"{d['copper']:.2f}"}
   • 市场广度 20D 动量: {breadth_display} ({breadth_note})
   • 黑色系: 铁矿石 {d['iron_ore']:.1f} | 螺纹钢 {d['rebar']:.1f}
   • 美股: {spx_display}

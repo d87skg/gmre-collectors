@@ -1,4 +1,4 @@
-"""engines_v2/regime_map.py - GMS 宏观体制映射"""
+"""engines_v2/regime_map.py - GMS 宏观体制映射 (v2: 加入 NaN 冻结保护)"""
 import sqlite3
 import numpy as np
 import pandas as pd
@@ -37,6 +37,8 @@ def load_latents(asof: str) -> dict:
 
 def map_to_regime(latents: dict) -> dict:
     keys = ['INF', 'MON', 'FIS', 'LIQ', 'RISK']
+    
+    # 提取向量，如果缺失默认给 0.0，但由于我们在 run() 里已经拦截了 NaN，这里相对安全
     vector = np.array([latents.get(k, 0.0) for k in keys])
     
     distances = {}
@@ -67,15 +69,21 @@ def save_regime(asof: str, latents: dict, result: dict):
             regime_probs TEXT, confidence REAL
         )
     """)
+    
+    # 将 NaN 转换为 None (SQLite 中的 NULL) 以防写入失败
+    val_inf = latents.get('INF', 0.0) if not pd.isna(latents.get('INF')) else None
+    val_mon = latents.get('MON', 0.0) if not pd.isna(latents.get('MON')) else None
+    val_fis = latents.get('FIS', 0.0) if not pd.isna(latents.get('FIS')) else None
+    val_liq = latents.get('LIQ', 0.0) if not pd.isna(latents.get('LIQ')) else None
+    val_risk = latents.get('RISK', 0.0) if not pd.isna(latents.get('RISK')) else None
+
     conn.execute("""
         INSERT OR REPLACE INTO gms_regimes 
         (asof_date, inf, mon, fis, liq, risk, regime_label, regime_name, regime_probs, confidence)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         asof,
-        latents.get('INF', 0.0), latents.get('MON', 0.0),
-        latents.get('FIS', 0.0), latents.get('LIQ', 0.0),
-        latents.get('RISK', 0.0),
+        val_inf, val_mon, val_fis, val_liq, val_risk,
         result['regime_label'], result['regime_name'],
         json.dumps(result['regime_probs']), result['confidence']
     ))
@@ -87,6 +95,28 @@ def run(asof: str) -> dict:
     if not latents:
         print(f"⚠️ {asof} 没有引擎输出，请先运行引擎")
         return {}
+        
+    # ==========================================
+    # 🆕 核心修复：NaN 穿透拦截与 FREEZE 保护
+    # ==========================================
+    has_nan = False
+    for k, v in latents.items():
+        if pd.isna(v):
+            has_nan = True
+            print(f"  🚨 [GMS] 发现引擎 {k} 数据异常 (NaN)")
+            
+    if has_nan:
+        print("  🚨 [GMS] 核心引擎数据缺失，已冻结体制判定，今日降级为 UNKNOWN！")
+        result = {
+            'regime_label': 'UNKNOWN',
+            'regime_name': '数据缺失 (NaN 冻结)',
+            'regime_probs': {},
+            'confidence': 0.0
+        }
+        return result
+    # ==========================================
+
+    # 如果没有 NaN，则正常计算
     result = map_to_regime(latents)
     save_regime(asof, latents, result)
     return result
