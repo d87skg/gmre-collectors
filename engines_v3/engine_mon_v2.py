@@ -1,4 +1,4 @@
-"""engines_v3/engine_mon_v2.py - MON升级版（含Policy Repricing）"""
+"""engines_v3/engine_mon_v2.py - MON升级版（含Policy Repricing）+ NaN 防弹"""
 import requests
 import sqlite3
 import io
@@ -29,7 +29,9 @@ def compute_mon_v2(asof: str) -> dict:
                     if not df.empty:
                         df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
                         df = df.dropna(subset=['dt']).drop_duplicates(subset=['dt'], keep='first')
-                        return df.sort_values('dt').set_index('dt')['value'].astype(float)
+                        s = df.sort_values('dt').set_index('dt')['value'].astype(float)
+                        # 🆕 核心修复：前向填充，防止周末断更导致 NaN
+                        return s.ffill()
                 except Exception:
                     continue
             return pd.Series(dtype=float)
@@ -41,11 +43,10 @@ def compute_mon_v2(asof: str) -> dict:
     finally:
         conn.close()
 
-       # ============ 1. MON_LEVEL（政策利率绝对水平）============
+    # ============ 1. MON_LEVEL（政策利率绝对水平）============
     mon_level = 0.0
     ff_used = None
     if len(fedfunds) >= 1:
-        # 关键修复：过滤掉污染数据（联邦基金利率一定 < 20%）
         valid_ff = fedfunds[fedfunds < 20]
         if len(valid_ff) >= 1:
             ff = float(valid_ff.iloc[-1])
@@ -59,7 +60,6 @@ def compute_mon_v2(asof: str) -> dict:
             else:
                 mon_level = 0.0
         else:
-            # 全部污染，用默认值
             ff = 3.75
             ff_used = ff
             mon_level = 1.0
@@ -69,45 +69,51 @@ def compute_mon_v2(asof: str) -> dict:
     # ============ 2. MON_DIRECTION（政策方向）============
     mon_direction = 0.0
     if len(yc2y) >= 20:
-        y2_chg = float(yc2y.iloc[-1] - yc2y.iloc[-20])
-        # 2Y收益率上升=货币收紧
-        mon_direction = np.clip(y2_chg * 10, -2.0, 2.0)
+        y2_now = float(yc2y.iloc[-1])
+        y2_20d = float(yc2y.iloc[-20])
+        if not pd.isna(y2_now) and not pd.isna(y2_20d):
+            y2_chg = y2_now - y2_20d
+            mon_direction = np.clip(y2_chg * 10, -2.0, 2.0)
     print(f"  MON_DIRECTION: {mon_direction:.3f} (2Y 20D变化)")
 
     # ============ 3. MON_REPRICING（政策预期重定价速度）============
-    # 代理：2Y收益率5日变化的速度
     mon_repricing = 0.0
     if len(yc2y) >= 10:
-        v5d = float(yc2y.iloc[-1] - yc2y.iloc[-5])
-        v5d_prev = float(yc2y.iloc[-5] - yc2y.iloc[-10])
-        # 5日变化量（单位bp）
-        repricing_bp = v5d * 100
-        # 加速度
-        accel = (v5d - v5d_prev) * 100
+        v5d_now = float(yc2y.iloc[-1])
+        v5d_5d = float(yc2y.iloc[-5])
+        v5d_prev_now = float(yc2y.iloc[-5])
+        v5d_prev_10d = float(yc2y.iloc[-10])
+        
+        if not pd.isna(v5d_now) and not pd.isna(v5d_5d) and not pd.isna(v5d_prev_10d):
+            v5d = v5d_now - v5d_5d
+            v5d_prev = v5d_prev_now - v5d_prev_10d
+            repricing_bp = v5d * 100
+            accel = (v5d - v5d_prev) * 100
 
-        if abs(repricing_bp) > 20:
-            mon_repricing = np.clip(repricing_bp / 20, -3.0, 3.0)
-        else:
-            mon_repricing = repricing_bp / 20
+            if abs(repricing_bp) > 20:
+                mon_repricing = np.clip(repricing_bp / 20, -3.0, 3.0)
+            else:
+                mon_repricing = repricing_bp / 20
     print(f"  MON_REPRICING: {mon_repricing:.3f} (5日重定价速度)")
 
     # ============ 4. MON_PERSISTENCE（加息持续性）============
-    # 用10Y-2Y利差判断（负值=倒挂，说明紧缩过度）
     mon_persistence = 0.0
     if len(us10y2y) >= 1:
         spread = float(us10y2y.iloc[-1])
-        # 倒挂越深，紧缩持续性越强
-        if spread < 0:
-            mon_persistence = min(abs(spread) / 1.0, 2.0)
+        if not pd.isna(spread):
+            if spread < 0:
+                mon_persistence = min(abs(spread) / 1.0, 2.0)
     print(f"  MON_PERSISTENCE: {mon_persistence:.3f} (10Y-2Y倒挂深度)")
 
     # ============ 5. MON_SURPRISE（vs 市场预期）============
-    # 暂用5日变化作为代理
     mon_surprise = 0.0
     if len(yc2y) >= 6:
-        y2_chg_1d = float(yc2y.iloc[-1] - yc2y.iloc[-2]) * 100  # bp
-        if abs(y2_chg_1d) > 10:
-            mon_surprise = np.clip(y2_chg_1d / 10, -2.0, 2.0)
+        y2_now = float(yc2y.iloc[-1])
+        y2_prev = float(yc2y.iloc[-2])
+        if not pd.isna(y2_now) and not pd.isna(y2_prev):
+            y2_chg_1d = (y2_now - y2_prev) * 100  # bp
+            if abs(y2_chg_1d) > 10:
+                mon_surprise = np.clip(y2_chg_1d / 10, -2.0, 2.0)
     print(f"  MON_SURPRISE: {mon_surprise:.3f} (1日变化)")
 
     # ============ 综合MON_Composite ============
@@ -118,6 +124,10 @@ def compute_mon_v2(asof: str) -> dict:
         + 0.10 * mon_persistence
         + 0.05 * mon_surprise
     )
+
+    # 兜底：如果算出 NaN，强制归零
+    if pd.isna(mon_composite):
+        mon_composite = 0.0
 
     if mon_composite > 1.5:
         direction = 'EXTREME_TIGHT'

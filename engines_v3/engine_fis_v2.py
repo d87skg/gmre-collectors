@@ -1,4 +1,4 @@
-"""engines_v3/engine_fis_v2.py - FIS拆分版（Flow/Structural/Supply/TermPremium）"""
+"""engines_v3/engine_fis_v2.py - FIS拆分版（Flow/Structural/Supply/TermPremium）+ NaN 防弹"""
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -26,7 +26,9 @@ def compute_fis_v2(asof: str) -> dict:
                     if not df.empty:
                         df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
                         df = df.dropna(subset=['dt']).drop_duplicates(subset=['dt'], keep='first')
-                        return df.sort_values('dt').set_index('dt')['value'].astype(float)
+                        s = df.sort_values('dt').set_index('dt')['value'].astype(float)
+                        # 🆕 核心修复：前向填充，防止周末断更导致 NaN
+                        return s.ffill()
                 except Exception:
                     continue
             return pd.Series(dtype=float)
@@ -39,47 +41,46 @@ def compute_fis_v2(asof: str) -> dict:
         conn.close()
 
     # ============ 1. FIS_FLOW（短期财政流量）============
-    # TGA释放资金（TGA下降）= 短期财政流量宽松 = FIS_FLOW负
     fis_flow = 0.0
     if len(tga) >= 5:
         tga_now = float(tga.iloc[-1])
         tga_4w = float(tga.iloc[-min(4, len(tga))])
-        tga_chg = (tga_now - tga_4w) / tga_4w if tga_4w else 0
-        # TGA下降 = 释放 = FIS_FLOW负值
-        fis_flow = tga_chg * 10
+        if not pd.isna(tga_now) and not pd.isna(tga_4w) and tga_4w != 0:
+            tga_chg = (tga_now - tga_4w) / tga_4w
+            fis_flow = tga_chg * 10
     print(f"  FIS_FLOW: {fis_flow:+.3f} (TGA流量)")
 
     # ============ 2. FIS_STRUCTURAL（结构性赤字）============
-    # 用10Y绝对值作为结构性财政压力的代理
     fis_structural = 0.0
     if len(y10) >= 1:
         y10_now = float(y10.iloc[-1])
-        # 10Y>4%=财政压力大
-        fis_structural = np.clip((y10_now - 3.0) * 2, -2.0, 3.0)
+        if not pd.isna(y10_now):
+            fis_structural = np.clip((y10_now - 3.0) * 2, -2.0, 3.0)
     print(f"  FIS_STRUCTURAL: {fis_structural:+.3f} (10Y水平)")
 
     # ============ 3. FIS_SUPPLY（国债净发行）============
-    # 用30Y-10Y曲线斜率作为长端供给压力代理
     fis_supply = 0.0
     if len(y30) >= 1 and len(y10) >= 1:
-        spread = float(y30.iloc[-1]) - float(y10.iloc[-1])
-        # 30Y-10Y扩大 = 长端供给压力大
-        if spread > 0.5:
-            fis_supply = 1.0 + (spread - 0.5) * 2
-        elif spread > 0:
-            fis_supply = spread
-        else:
-            fis_supply = spread * 2
+        y30_now = float(y30.iloc[-1])
+        y10_now = float(y10.iloc[-1])
+        if not pd.isna(y30_now) and not pd.isna(y10_now):
+            spread = y30_now - y10_now
+            if spread > 0.5:
+                fis_supply = 1.0 + (spread - 0.5) * 2
+            elif spread > 0:
+                fis_supply = spread
+            else:
+                fis_supply = spread * 2
     print(f"  FIS_SUPPLY: {fis_supply:+.3f} (30Y-10Y曲线)")
 
     # ============ 4. FIS_TERM_PREMIUM（期限溢价）============
-    # 用30Y变化率
     fis_term = 0.0
     if len(y30) >= 20:
         y30_now = float(y30.iloc[-1])
-        y30_20d = float(y30.iloc[-min(20, len(y30))])
-        y30_chg = (y30_now - y30_20d) * 100  # bp
-        fis_term = np.clip(y30_chg / 20, -2.0, 3.0)
+        y30_20d = float(y30.iloc[-20])
+        if not pd.isna(y30_now) and not pd.isna(y30_20d):
+            y30_chg = (y30_now - y30_20d) * 100  # bp
+            fis_term = np.clip(y30_chg / 20, -2.0, 3.0)
     print(f"  FIS_TERM_PREMIUM: {fis_term:+.3f} (30Y变化)")
 
     # ============ 综合FIS_Composite ============
@@ -89,6 +90,10 @@ def compute_fis_v2(asof: str) -> dict:
         + 0.25 * fis_supply
         + 0.20 * fis_term
     )
+
+    # 兜底：如果算出 NaN，强制归零
+    if pd.isna(fis_composite):
+        fis_composite = 0.0
 
     if fis_composite > 1.5:
         direction = 'SEVERE_STRESS'
