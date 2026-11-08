@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - GMRE 4.1 全息推送（日频决策 + 盘中参考分离）"""
+"""tools/send_local_feishu.py - GMRE 4.1 全息推送（日频决策 + 盘中参考分离 + 断更防呆）"""
 import os
 import requests
 import json
@@ -44,9 +44,7 @@ def get_latest_data():
         'dxy': 0.0, 'usdjpy': 0.0, 'usdcny': 0.0, 'usdcnh': 0.0, 'spx': 0.0,
         'cn10y': 0.0, 'jp10y': 0.0, 'de10y': 0.0,
         'us_cn_spread': 0.0, 'us_jp_spread': 0.0, 'us_de_spread': 0.0,
-        # 扩展指标（修正：市场广度用 20D 动量，不再用 SPY/RSP 绝对比值）
         'breadth_momentum': 0.0, 'iron_ore': 0.0, 'rebar': 0.0,
-        # GMRE 4.1
         'dxy_5y_pct': None, 'dollar_scenario': 'N/A', 'dollar_assets': {},
         'cali_score': 0.0, 'cali_level': 'N/A', 'cali_detail': {},
         'crowding_score': 0.0, 'crowding_level': 'N/A',
@@ -179,16 +177,12 @@ def get_latest_data():
             data['rrp'] = get_val('RRP_BALANCE')
             data['rrp_source'] = 'FRED(降级)'
 
-        # 日频决策口径：10Y 只用 YC10Y
         data['y10'] = get_val('YC10Y')
-        # 盘中实时参考：不参与利差、不参与决策
         data['us10y_rt'] = get_val('US10Y_RT_TRADEWEB')
-
         data['cn10y'] = get_val('CN_10Y_YIELD')
         data['jp10y'] = get_val('JP_10Y')
         data['de10y'] = get_val('DE_10Y')
 
-        # 利差计算只用日频 YC10Y
         if data['y10'] and data['cn10y']:
             data['us_cn_spread'] = data['y10'] - data['cn10y']
         if data['y10'] and data['jp10y']:
@@ -199,7 +193,6 @@ def get_latest_data():
         data['hy_oas'] = get_val('HY_SPREAD')
         data['vix'] = get_val('VIX')
 
-        # 扩展数据（修正：市场广度 20D 动量）
         data['breadth_momentum'] = get_val('BREADTH_20D_MOMENTUM')
         data['iron_ore'] = get_val('IRON_ORE_DOMESTIC')
         data['rebar'] = get_val('REBAR')
@@ -227,11 +220,20 @@ def get_latest_data():
             data['coinbase_prem'] = min(max(float(f_data.get('coinbase_premium', 0) or 0), -10.0), 10.0)
             data['btc_etf_flow'] = float(f_data.get('btc_etf_flow_usd_m', 0) or 0)
             data['fear_greed'] = int(float(f_data.get('fear_greed', 0) or 0))
-            data['silver'] = float(f_data.get('silver', 0) or 0)
-            data['copper'] = float(f_data.get('copper', 0) or 0)
+            
+            # 🆕 核心修复：遇到断更返回 0 的值，不赋值为 0.0，而是赋值为 'N/A'
+            silver_val = float(f_data.get('silver', 0) or 0)
+            data['silver'] = silver_val if silver_val > 0 else 'N/A'
+            
+            copper_val = float(f_data.get('copper', 0) or 0)
+            data['copper'] = copper_val if copper_val > 0 else 'N/A'
 
-            data['gold'] = get_val('GOLD_PRICE') or float(f_data.get('gold', 0) or 0)
-            data['oil'] = get_val('WTI_OIL') or float(f_data.get('oil', 0) or 0)
+            gold_val = get_val('GOLD_PRICE') or float(f_data.get('gold', 0) or 0)
+            data['gold'] = gold_val if gold_val > 0 else 'N/A'
+
+            oil_val = get_val('WTI_OIL') or float(f_data.get('oil', 0) or 0)
+            data['oil'] = oil_val if oil_val > 0 else 'N/A'
+
             data['dxy'] = get_val('DXY_PROXY') or float(f_data.get('dxy', 0) or 0)
             data['usdjpy'] = get_val('USD_JPY') or float(f_data.get('usdjpy', 0) or 0)
             data['spx'] = get_val('NDX') or get_val('SP500') or float(f_data.get('ndx', 0) or 0)
@@ -350,11 +352,9 @@ def main():
     }
     scenario_text = scenario_map.get(d['dollar_scenario'], '⚪ ' + str(d['dollar_scenario']))
 
-    # 市场广度：20D 动量
     breadth_display = f"{d['breadth_momentum']:+.2f}%"
     breadth_note = "负=小盘拖累/宽度恶化" if d['breadth_momentum'] < 0 else "正=小盘相对走强/宽度改善"
 
-    # 10Y 美债：日频决策 + 盘中参考分离
     us10y_rt_display = f"{d['us10y_rt']:.3f}%" if d['us10y_rt'] and d['us10y_rt'] > 0 else "N/A"
 
     text = f"""📊 **GMRE 4.1 全息风控晨报** - {d['asof']}
