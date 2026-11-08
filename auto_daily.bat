@@ -99,4 +99,4 @@ echo   Pipeline completed successfully
 echo ========================================================
 echo ======================================================== >> %logfile%
 echo   Pipeline completed >> %logfile%
-pause
+exit /b 0

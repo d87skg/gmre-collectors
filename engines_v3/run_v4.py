@@ -1,4 +1,4 @@
-"""engines_v3/run_v4.py - GMRE 4.1 完整集成版（日频决策口径唯一 + 盘中实时参考 + 影子引擎）"""
+"""engines_v3/run_v4.py - GMRE 4.1 完整集成版（日频决策口径唯一 + 盘中实时参考 + 影子引擎 + NaN冻结保护）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -155,16 +155,28 @@ def main():
         except Exception as e:
             print(f"  [{mod.ENGINE_ID}] ❌ 失败: {e}")
 
+    # 🆕 加入 NaN 拦截与 FREEZE 保护：MON_V2
     try:
         mon_v2 = engine_mon_v2.compute_mon_v2(asof)
-        print(f"  [MON_V2] Composite={mon_v2['composite']:+.4f} | {mon_v2['direction']}")
-    except Exception:
-        pass
+        comp_val = mon_v2.get('composite', 0)
+        if math.isnan(comp_val):
+            print(f"  [MON_V2] 🚨 数据异常 (NaN)，已冻结拒绝输出！")
+        else:
+            print(f"  [MON_V2] Composite={comp_val:+.4f} | {mon_v2['direction']}")
+    except Exception as e:
+        print(f"  [MON_V2] ❌ 计算失败: {e}")
+
+    # 🆕 加入 NaN 拦截与 FREEZE 保护：FIS_V2
     try:
         fis_v2 = engine_fis_v2.compute_fis_v2(asof)
-        print(f"  [FIS_V2] Composite={fis_v2['composite']:+.4f} | {fis_v2['direction']}")
-    except Exception:
-        pass
+        comp_val_fis = fis_v2.get('composite', 0)
+        if math.isnan(comp_val_fis):
+            print(f"  [FIS_V2] 🚨 数据异常 (NaN)，已冻结拒绝输出！")
+        else:
+            print(f"  [FIS_V2] Composite={comp_val_fis:+.4f} | {fis_v2['direction']}")
+    except Exception as e:
+        print(f"  [FIS_V2] ❌ 计算失败: {e}")
+
     try:
         inf_exp = engine_inf_expect.compute_engine(asof)
         if inf_exp.get('level') != 'MISSING_DATA':
