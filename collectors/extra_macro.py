@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""collectors/extra_macro.py - 全量扩展（v3.2：拉取5年历史以支持正确分位计算）"""
+"""collectors/extra_macro.py - 全量扩展（v3.3：新增 1-3年短债ETF SHY 采集）"""
 import sys
 import requests
 import pandas as pd
@@ -27,11 +27,7 @@ def save_to_db(rows):
 
 
 def save_realtime_us10y(value: float, quote_time_bj: str, source='Tradeweb'):
-    """
-    实时10Y美债入库：只做盘中参考，不覆盖日频 YC10Y。
-    series_id = US10Y_RT_TRADEWEB
-    用途：盘中监控/预警，不参与 Risk Gate、不参与中美/美日/美德利差计算。
-    """
+    """实时10Y美债入库：只做盘中参考，不覆盖日频 YC10Y。"""
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.execute(
@@ -49,7 +45,6 @@ def save_realtime_us10y(value: float, quote_time_bj: str, source='Tradeweb'):
 
 def fetch_yahoo(symbol, series_id):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    # 🆕 核心修复：将 range 从 1mo 改为 5y，为分位数计算提供足够长的历史窗口
     params = {"interval": "1d", "range": "5y"} 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -111,7 +106,7 @@ def main():
                 'value': breadth_momentum,
                 'source': 'calc_breadth'
             })
-            print(f"  ✅ 市场广度 20D 动量: {breadth_momentum:+.2f}% (负数说明小盘股拖累大盘)")
+            print(f"  ✅ 市场广度 20D 动量: {breadth_momentum:+.2f}%")
 
     # 2. 黄金 ETF (GLD)
     print("🔄 正在抓取 黄金 ETF (GLD)...")
@@ -119,22 +114,29 @@ def main():
     if gld_rows:
         print(f"  ✅ GLD: {gld_rows[-1]['value']:.2f}")
         all_rows.extend(gld_rows)
+        
+    # 🆕 3. 1-3年短债 ETF (SHY)
+    print("🔄 正在抓取 1-3年短债 ETF (SHY)...")
+    shy_rows = fetch_yahoo('SHY', 'SHY_PRICE')
+    if shy_rows:
+        print(f"  ✅ SHY: {shy_rows[-1]['value']:.2f}")
+        all_rows.extend(shy_rows)
 
-    # 3. 离岸人民币 (USD/CNH)
+    # 4. 离岸人民币 (USD/CNH)
     print("🔄 正在抓取 离岸人民币 (USD/CNH)...")
     cnh_rows = fetch_yahoo('CNH=X', 'USD_CNH')
     if cnh_rows:
         print(f"  ✅ USD/CNH: {cnh_rows[-1]['value']:.4f}")
         all_rows.extend(cnh_rows)
 
-    # 4. VIX3M
+    # 5. VIX3M
     print("🔄 正在抓取 VIX3M (^VIX3M)...")
     vix3m_rows = fetch_yahoo('^VIX3M', 'VIX3M')
     if vix3m_rows:
         print(f"  ✅ VIX3M: {vix3m_rows[-1]['value']:.2f}")
         all_rows.extend(vix3m_rows)
 
-    # 5. 黑色系
+    # 6. 黑色系
     print("🔄 正在抓取 螺纹钢/铁矿石...")
     rb = fetch_sina_futures('RB0', 'REBAR')
     if rb:
@@ -153,10 +155,6 @@ def main():
 
 
 if __name__ == '__main__':
-    # 用法1：常规日频采集
-    #   python extra_macro.py
-    # 用法2：写入盘中实时10Y（不覆盖 YC10Y，只做参考）
-    #   python extra_macro.py realtime_us10y 4.917 "2026-11-02 22:16"
     if len(sys.argv) >= 3 and sys.argv[1] == 'realtime_us10y':
         _val = float(sys.argv[2])
         _ts = sys.argv[3] if len(sys.argv) > 3 else datetime.now().strftime('%Y-%m-%d %H:%M')

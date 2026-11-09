@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""engines_v3/risk_budget_engine.py - 影子风险预算与动量过滤引擎 (v3.1: 修复波动率为0导致的NaN)"""
+"""engines_v3/risk_budget_engine.py - 影子风险预算与动量过滤引擎 (v3.2: 短债SHY适配)"""
 import sqlite3
 import numpy as np
 import pandas as pd
@@ -7,14 +7,13 @@ from sklearn.covariance import LedoitWolf
 
 DB_PATH = 'data/macro.db'
 
+# 🆕 资产替换：用 SHY 替代 US10Y
 ASSETS = {
     'SP500': 'SP500',
     'GOLD': 'GOLD_PRICE',
     'BTC': 'BTC_SPOT_PRICE_1H',
-    'US10Y': 'YC10Y'
+    'SHY': 'SHY_PRICE'
 }
-
-DURATION_10Y = 7.5
 
 def get_pit_series(series_id, limit=252):
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -98,30 +97,21 @@ def compute_shadow_weights(gate_state):
         
     df_prices = pd.DataFrame(prices).ffill().dropna()
     
-    returns = pd.DataFrame()
-    for col in df_prices.columns:
-        if col == 'US10Y':
-            yield_diff = df_prices[col].diff() / 100.0
-            returns[col] = -DURATION_10Y * yield_diff
-        else:
-            returns[col] = df_prices[col].pct_change()
-            
-    returns = returns.dropna()
+    # 🆕 由于 SHY 是 ETF 价格，统一用 pct_change 计算收益率
+    returns = df_prices.pct_change().dropna()
     
     cov, cov_status = estimate_covariance(returns)
     print(f"  [协方差] 状态: {cov_status} | 形状: {cov.shape if cov is not None else 'None'}")
     if cov is None: return None
     
-    # 🆕 核心修复：防止 0 波动率导致 nan
     vols = returns.std()
-    vols = vols.replace(0, np.nan).fillna(0.02) # 如果波动率为 0，赋予默认值 2%
+    vols = vols.replace(0, np.nan).fillna(0.02)
     
     inv_vols = 1 / vols
     inv_vols = inv_vols.replace([np.inf, -np.inf], np.nan).fillna(0.0)
     
     total_inv_vol = inv_vols.sum()
     if total_inv_vol <= 0:
-        # 极端情况：全部为 0，退化为等权重
         base_weights = pd.Series(1.0 / len(returns.columns), index=returns.columns)
     else:
         base_weights = inv_vols / total_inv_vol

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - GMRE 4.1 全息推送（日频决策 + 盘中参考分离 + 断更防呆）"""
+"""tools/send_local_feishu.py - GMRE 4.1 全息推送（日频决策 + 盘中参考分离 + 短债SHY适配）"""
 import os
 import requests
 import json
@@ -221,7 +221,6 @@ def get_latest_data():
             data['btc_etf_flow'] = float(f_data.get('btc_etf_flow_usd_m', 0) or 0)
             data['fear_greed'] = int(float(f_data.get('fear_greed', 0) or 0))
             
-            # 🆕 核心修复：遇到断更返回 0 的值，不赋值为 0.0，而是赋值为 'N/A'
             silver_val = float(f_data.get('silver', 0) or 0)
             data['silver'] = silver_val if silver_val > 0 else 'N/A'
             
@@ -279,7 +278,7 @@ def main():
         weights, cash_pct = get_portfolio_advice(d['risk_gate'], d['frag_score'], caps_cu=caps_cu_val)
         health_text = get_data_health()
     except Exception as e:
-        weights = {'BTC': 0, 'GOLD': 0, 'US10Y': 0}
+        weights = {'BTC': 0, 'GOLD': 0, 'SHY': 0}
         cash_pct = 100
         health_text = f"❌ 仓位引擎异常: {e}"
 
@@ -381,7 +380,7 @@ def main():
 ====================================
 💼 **风险平价仓位建议**:
   • 现金留存: {cash_pct:.1f}%
-  • BTC: {weights.get('BTC', 0):.1f}% | 黄金: {weights.get('GOLD', 0):.1f}% | 美债: {weights.get('US10Y', 0):.1f}%
+  • BTC: {weights.get('BTC', 0):.1f}% | 黄金: {weights.get('GOLD', 0):.1f}% | 短债: {weights.get('SHY', 0):.1f}%
 
 🌍 **大类资产与汇率矩阵**:
   • 黄金: ${d['gold'] if isinstance(d['gold'], str) else f"{d['gold']:.2f}"} | 白银: ${d['silver'] if isinstance(d['silver'], str) else f"{d['silver']:.2f}"}
