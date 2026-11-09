@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - GMRE 4.1 全息推送（日频决策 + 盘中参考分离 + 短债SHY适配）"""
+"""tools/send_local_feishu.py - GMRE 4.1 全息推送（事件拦截 + 短债适配）"""
 import os
 import requests
 import json
@@ -19,13 +19,9 @@ WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
 SECRET = os.environ.get('FEISHU_SECRET')
 DB_PATH = 'data/macro.db'
 
-
 def gen_sign(timestamp, secret):
     string_to_sign = f'{timestamp}\n{secret}'
-    return base64.b64encode(
-        hmac.new(string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()
-    ).decode('utf-8')
-
+    return base64.b64encode(hmac.new(string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()).decode('utf-8')
 
 def get_latest_data():
     asof = datetime.now().strftime('%Y-%m-%d')
@@ -33,13 +29,10 @@ def get_latest_data():
         'asof': asof, 'frag_score': 0.0, 'frag_level': 'N/A',
         'risk_gate': 'UNKNOWN', 'stress_layers': 'NONE',
         'p_high_risk': 0.0, 'p_r4': 0.0, 'p_r5': 0.0,
-        'rrp_source': 'N/A',
-        'caps_al': 'N/A', 'caps_cu': 'N/A', 'cu_spread': 0.0,
-        'lti_score': 0.0, 'lti_level': 'UNKNOWN',
-        'y10': 0.0, 'us10y_rt': 0.0, 'rrp': 0.0, 'hy_oas': 0.0, 'vix': 0.0,
-        'bitget_fr': 0.0, 'coinbase_prem': 0.0, 'hl_imb': 0.0,
-        'btc_etf_flow': 0.0, 'fear_greed': 0,
-        'lti_raw_fr': 0.0, 'lti_raw_imb': 0.0,
+        'rrp_source': 'N/A', 'caps_al': 'N/A', 'caps_cu': 'N/A', 'cu_spread': 0.0,
+        'lti_score': 0.0, 'lti_level': 'UNKNOWN', 'y10': 0.0, 'us10y_rt': 0.0, 
+        'rrp': 0.0, 'hy_oas': 0.0, 'vix': 0.0, 'bitget_fr': 0.0, 'coinbase_prem': 0.0, 
+        'hl_imb': 0.0, 'btc_etf_flow': 0.0, 'fear_greed': 0, 'lti_raw_fr': 0.0, 'lti_raw_imb': 0.0,
         'gold': 'N/A', 'silver': 'N/A', 'oil': 'N/A', 'copper': 'N/A',
         'dxy': 0.0, 'usdjpy': 0.0, 'usdcny': 0.0, 'usdcnh': 0.0, 'spx': 0.0,
         'cn10y': 0.0, 'jp10y': 0.0, 'de10y': 0.0,
@@ -49,124 +42,80 @@ def get_latest_data():
         'cali_score': 0.0, 'cali_level': 'N/A', 'cali_detail': {},
         'crowding_score': 0.0, 'crowding_level': 'N/A',
         'micro_status': 'N/A', 'micro_score': 0.0, 'micro_details': {},
-        'factor_status': 'N/A', 'factor_msg': 'N/A',
-        'lti_details': {},
+        'factor_status': 'N/A', 'factor_msg': 'N/A', 'lti_details': {},
+        'event_perm': 'N/A', 'event_reason': 'N/A', # 🆕 事件拦截
     }
 
     try:
         conn = sqlite3.connect(DB_PATH)
-
-        row = conn.execute(
-            "SELECT risk_gate, stress_state, frag_level FROM daily_summary WHERE asof_date=?",
-            (asof,)
-        ).fetchone()
+        row = conn.execute("SELECT risk_gate, stress_state, frag_level FROM daily_summary WHERE asof_date=?", (asof,)).fetchone()
         if row:
             data['risk_gate'], data['stress_layers'], data['frag_level'] = row[0], row[1], row[2]
-            try:
-                data['frag_score'] = float(row[2].split('(')[1].split(')')[0])
-            except Exception:
-                pass
+            try: data['frag_score'] = float(row[2].split('(')[1].split(')')[0])
+            except Exception: pass
 
-        prob_row = conn.execute(
-            "SELECT p_r4, p_r5, high_risk_prob FROM probability_engine WHERE asof_date=?",
-            (asof,)
-        ).fetchone()
-        if not prob_row:
-            prob_row = conn.execute(
-                "SELECT p_r4, p_r5, high_risk_prob FROM probability_engine ORDER BY asof_date DESC LIMIT 1"
-            ).fetchone()
+        prob_row = conn.execute("SELECT p_r4, p_r5, high_risk_prob FROM probability_engine WHERE asof_date=?", (asof,)).fetchone()
+        if not prob_row: prob_row = conn.execute("SELECT p_r4, p_r5, high_risk_prob FROM probability_engine ORDER BY asof_date DESC LIMIT 1").fetchone()
         if prob_row:
             data['p_r4'] = float(prob_row[0] or 0)
             data['p_r5'] = float(prob_row[1] or 0)
             data['p_high_risk'] = float(prob_row[2] or 0)
 
         try:
-            micro_row = conn.execute(
-                "SELECT details_json FROM predictions_log WHERE forecast_date=?", (asof,)
-            ).fetchone()
+            micro_row = conn.execute("SELECT details_json FROM predictions_log WHERE forecast_date=?", (asof,)).fetchone()
             if micro_row and micro_row[0]:
                 detail_json = json.loads(micro_row[0])
                 micro_res = detail_json.get('micro_trigger', {})
                 data['micro_status'] = micro_res.get('status', 'N/A')
                 data['micro_score'] = micro_res.get('score', 0.0)
                 data['micro_details'] = micro_res.get('details', {})
-
                 factor_res = detail_json.get('factor_concentration', {})
                 data['factor_status'] = factor_res.get('status', 'N/A')
                 data['factor_msg'] = factor_res.get('msg', 'N/A')
-        except Exception:
-            pass
+                
+                # 🆕 读取拦截器
+                event_res = detail_json.get('event_interceptor', {})
+                data['event_perm'] = event_res.get('perm', 'N/A')
+                data['event_reason'] = event_res.get('reason', 'N/A')
+        except Exception: pass
 
-        da_row = conn.execute(
-            "SELECT dxy, dxy_5y_pct, scenario, detail FROM dollar_anchor WHERE asof_date=?",
-            (asof,)
-        ).fetchone()
-        if not da_row:
-            da_row = conn.execute(
-                "SELECT dxy, dxy_5y_pct, scenario, detail FROM dollar_anchor ORDER BY asof_date DESC LIMIT 1"
-            ).fetchone()
+        da_row = conn.execute("SELECT dxy, dxy_5y_pct, scenario, detail FROM dollar_anchor WHERE asof_date=?", (asof,)).fetchone()
+        if not da_row: da_row = conn.execute("SELECT dxy, dxy_5y_pct, scenario, detail FROM dollar_anchor ORDER BY asof_date DESC LIMIT 1").fetchone()
         if da_row:
             data['dxy_5y_pct'] = float(da_row[1]) if da_row[1] is not None else None
             data['dollar_scenario'] = da_row[2] or 'N/A'
-            try:
-                data['dollar_assets'] = json.loads(da_row[3]).get('assets', {})
-            except Exception:
-                pass
+            try: data['dollar_assets'] = json.loads(da_row[3]).get('assets', {})
+            except Exception: pass
 
-        cali_row = conn.execute(
-            "SELECT cali_score, level, detail FROM cali_engine WHERE asof_date=?",
-            (asof,)
-        ).fetchone()
-        if not cali_row:
-            cali_row = conn.execute(
-                "SELECT cali_score, level, detail FROM cali_engine ORDER BY asof_date DESC LIMIT 1"
-            ).fetchone()
+        cali_row = conn.execute("SELECT cali_score, level, detail FROM cali_engine WHERE asof_date=?", (asof,)).fetchone()
+        if not cali_row: cali_row = conn.execute("SELECT cali_score, level, detail FROM cali_engine ORDER BY asof_date DESC LIMIT 1").fetchone()
         if cali_row:
             data['cali_score'] = float(cali_row[0] or 0)
             data['cali_level'] = cali_row[1] or 'N/A'
-            try:
-                data['cali_detail'] = json.loads(cali_row[2]) if len(cali_row) > 2 and cali_row[2] else {}
-            except Exception:
-                data['cali_detail'] = {}
+            try: data['cali_detail'] = json.loads(cali_row[2]) if len(cali_row) > 2 and cali_row[2] else {}
+            except Exception: data['cali_detail'] = {}
 
-        cr_row = conn.execute(
-            "SELECT score, level FROM crowding_engine WHERE asof_date=?",
-            (asof,)
-        ).fetchone()
-        if not cr_row:
-            cr_row = conn.execute(
-                "SELECT score, level FROM crowding_engine ORDER BY asof_date DESC LIMIT 1"
-            ).fetchone()
+        cr_row = conn.execute("SELECT score, level FROM crowding_engine WHERE asof_date=?", (asof,)).fetchone()
+        if not cr_row: cr_row = conn.execute("SELECT score, level FROM crowding_engine ORDER BY asof_date DESC LIMIT 1").fetchone()
         if cr_row:
             data['crowding_score'] = float(cr_row[0] or 0)
             data['crowding_level'] = cr_row[1] or 'N/A'
 
-        row = conn.execute(
-            "SELECT caps_score FROM caps_engine WHERE symbol='SHFE_ALUMINUM' ORDER BY asof_date DESC LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT caps_score FROM caps_engine WHERE symbol='SHFE_ALUMINUM' ORDER BY asof_date DESC LIMIT 1").fetchone()
         data['caps_al'] = round(row[0], 1) if row and row[0] is not None else 'N/A'
-        row = conn.execute(
-            "SELECT caps_score FROM caps_engine WHERE symbol='SHFE_COPPER' ORDER BY asof_date DESC LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT caps_score FROM caps_engine WHERE symbol='SHFE_COPPER' ORDER BY asof_date DESC LIMIT 1").fetchone()
         data['caps_cu'] = round(row[0], 1) if row and row[0] is not None else 'N/A'
 
-        row = conn.execute(
-            "SELECT lti_score, level FROM lti_engine ORDER BY asof_date DESC LIMIT 1"
-        ).fetchone()
-        if row:
-            data['lti_score'], data['lti_level'] = round(row[0], 1), row[1]
+        row = conn.execute("SELECT lti_score, level FROM lti_engine ORDER BY asof_date DESC LIMIT 1").fetchone()
+        if row: data['lti_score'], data['lti_level'] = round(row[0], 1), row[1]
         try:
             from engines_v3 import lti_engine as _lti_mod
             _lti_full = _lti_mod.compute_lti(asof)
             data['lti_details'] = _lti_full.get('details', {})
-        except Exception:
-            data['lti_details'] = {}
+        except Exception: data['lti_details'] = {}
 
         def get_val(sid):
-            r = conn.execute(
-                "SELECT value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 1",
-                (sid,)
-            ).fetchone()
+            r = conn.execute("SELECT value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 1", (sid,)).fetchone()
             return r[0] if r else 0.0
 
         rrp_nyfed = get_val('RRP_NYFED')
@@ -183,34 +132,23 @@ def get_latest_data():
         data['jp10y'] = get_val('JP_10Y')
         data['de10y'] = get_val('DE_10Y')
 
-        if data['y10'] and data['cn10y']:
-            data['us_cn_spread'] = data['y10'] - data['cn10y']
-        if data['y10'] and data['jp10y']:
-            data['us_jp_spread'] = data['y10'] - data['jp10y']
-        if data['y10'] and data['de10y']:
-            data['us_de_spread'] = data['y10'] - data['de10y']
+        if data['y10'] and data['cn10y']: data['us_cn_spread'] = data['y10'] - data['cn10y']
+        if data['y10'] and data['jp10y']: data['us_jp_spread'] = data['y10'] - data['jp10y']
+        if data['y10'] and data['de10y']: data['us_de_spread'] = data['y10'] - data['de10y']
 
         data['hy_oas'] = get_val('HY_SPREAD')
         data['vix'] = get_val('VIX')
-
         data['breadth_momentum'] = get_val('BREADTH_20D_MOMENTUM')
         data['iron_ore'] = get_val('IRON_ORE_DOMESTIC')
         data['rebar'] = get_val('REBAR')
         data['usdcnh'] = get_val('USD_CNH')
 
-        fr_row = conn.execute(
-            "SELECT value FROM observations WHERE series_id='BTC_FUNDING_RATE_1H' ORDER BY timestamp DESC LIMIT 1"
-        ).fetchone()
+        fr_row = conn.execute("SELECT value FROM observations WHERE series_id='BTC_FUNDING_RATE_1H' ORDER BY timestamp DESC LIMIT 1").fetchone()
         data['bitget_fr'] = (fr_row[0] if fr_row else 0.0) * 3 * 365 * 100
         data['lti_raw_fr'] = data['bitget_fr']
 
-        oi_rows = conn.execute(
-            "SELECT value FROM observations WHERE series_id='BTC_OI_VALUE_HIST' ORDER BY timestamp DESC LIMIT 289"
-        ).fetchall()
-        data['hl_imb'] = (
-            ((oi_rows[0][0] - oi_rows[288][0]) / oi_rows[288][0] * 100)
-            if len(oi_rows) >= 288 and oi_rows[288][0] else 0.0
-        )
+        oi_rows = conn.execute("SELECT value FROM observations WHERE series_id='BTC_OI_VALUE_HIST' ORDER BY timestamp DESC LIMIT 289").fetchall()
+        data['hl_imb'] = ((oi_rows[0][0] - oi_rows[288][0]) / oi_rows[288][0] * 100) if len(oi_rows) >= 288 and oi_rows[288][0] else 0.0
         data['lti_raw_imb'] = data['hl_imb']
 
         row = conn.execute("SELECT * FROM feishu_snapshot ORDER BY timestamp DESC LIMIT 1").fetchone()
@@ -223,13 +161,11 @@ def get_latest_data():
             
             silver_val = float(f_data.get('silver', 0) or 0)
             data['silver'] = silver_val if silver_val > 0 else 'N/A'
-            
             copper_val = float(f_data.get('copper', 0) or 0)
             data['copper'] = copper_val if copper_val > 0 else 'N/A'
 
             gold_val = get_val('GOLD_PRICE') or float(f_data.get('gold', 0) or 0)
             data['gold'] = gold_val if gold_val > 0 else 'N/A'
-
             oil_val = get_val('WTI_OIL') or float(f_data.get('oil', 0) or 0)
             data['oil'] = oil_val if oil_val > 0 else 'N/A'
 
@@ -240,37 +176,25 @@ def get_latest_data():
 
             raw_cny = float(f_data.get('usdcny_mid', 0) or 0)
             if raw_cny == 0:
-                r_cny = conn.execute(
-                    "SELECT value FROM observations WHERE series_id='USDCNY_MID' AND value > 0 ORDER BY timestamp DESC LIMIT 1"
-                ).fetchone()
+                r_cny = conn.execute("SELECT value FROM observations WHERE series_id='USDCNY_MID' AND value > 0 ORDER BY timestamp DESC LIMIT 1").fetchone()
                 raw_cny = r_cny[0] if r_cny else 0.0
             data['usdcny'] = raw_cny / 100.0 if raw_cny > 10 else raw_cny
         else:
             data['spx'] = get_val('NDX') or get_val('SP500')
             data['cu_spread'] = get_val('CU_SPREAD_PCT')
-
-    except Exception as e:
-        print(f"⚠️ 读取数据库失败: {e}")
+    except Exception as e: print(f"⚠️ 读取数据库失败: {e}")
     finally:
-        if 'conn' in locals():
-            conn.close()
+        if 'conn' in locals(): conn.close()
     return data
 
-
 def get_dual_phase(data):
-    if data['cali_score'] >= 60:
-        return '🔴 上半场（去杠杆中）', '50-70%'
-    elif data['dxy_5y_pct'] is not None and data['dxy_5y_pct'] < 10:
-        return '🟠 上半场尾部（流动性枯竭末期）', '50-70%'
-    elif data['risk_gate'] in ('ORANGE', 'YELLOW'):
-        return '🟡 过渡期（政策底已现，市场底待确认）', '40-60%'
-    else:
-        return '🟢 下半场（降息重估）', '10-20%'
-
+    if data['cali_score'] >= 60: return '🔴 上半场（去杠杆中）', '50-70%'
+    elif data['dxy_5y_pct'] is not None and data['dxy_5y_pct'] < 10: return '🟠 上半场尾部（流动性枯竭末期）', '50-70%'
+    elif data['risk_gate'] in ('ORANGE', 'YELLOW'): return '🟡 过渡期（政策底已现，市场底待确认）', '40-60%'
+    else: return '🟢 下半场（降息重估）', '10-20%'
 
 def main():
-    if not WEBHOOK or not SECRET:
-        return
+    if not WEBHOOK or not SECRET: return
     d = get_latest_data()
 
     try:
@@ -286,30 +210,22 @@ def main():
         action_guide = "🚨 极度危险：沪铜发生史诗级逼仓，宏观流动性枯竭，现金为王，切勿进场！"
     elif d['risk_gate'] == 'RED':
         reasons = []
-        if d['frag_score'] >= 80:
-            reasons.append(f"Fragility={d['frag_score']:.1f}")
-        if d['p_high_risk'] >= 0.50:
-            reasons.append(f"P(R4+R5)={d['p_high_risk']*100:.1f}%")
+        if d['frag_score'] >= 80: reasons.append(f"Fragility={d['frag_score']:.1f}")
+        if d['p_high_risk'] >= 0.50: reasons.append(f"P(R4+R5)={d['p_high_risk']*100:.1f}%")
         action_guide = f"⚠️ 行动指南：现金为王，久期与杠杆降至最低。触发：{', '.join(reasons) or '多压力层共振'}"
     elif d['risk_gate'] == 'ORANGE':
         reasons = []
-        if d['frag_score'] >= 65:
-            reasons.append(f"Fragility={d['frag_score']:.1f}")
-        if d['p_high_risk'] >= 0.30:
-            reasons.append(f"P(R4+R5)={d['p_high_risk']*100:.1f}%")
+        if d['frag_score'] >= 65: reasons.append(f"Fragility={d['frag_score']:.1f}")
+        if d['p_high_risk'] >= 0.30: reasons.append(f"P(R4+R5)={d['p_high_risk']*100:.1f}%")
         action_guide = f"⚖️ 行动指南：保持防守，控制仓位，等待右侧信号。触发：{', '.join(reasons) or '结构性脆弱'}"
     else:
         action_guide = "🟢 行动指南：可适度提升风险敞口，顺势而为。"
 
     micro_alerts = []
-    if d['bitget_fr'] > 50:
-        micro_alerts.append(f"🚨 资金费率极度拥挤: {d['bitget_fr']:+.2f}% 年化")
-    if d['coinbase_prem'] < -0.1:
-        micro_alerts.append(f"🇺🇸 机构现货抛压: {d['coinbase_prem']:+.3f}%")
-    if d['hl_imb'] > 3.0:
-        micro_alerts.append(f"📊 持仓量剧增: 24H变幅 {d['hl_imb']:+.2f}%")
-    elif d['hl_imb'] < -3.0:
-        micro_alerts.append(f"📊 持仓量剧减: 24H变幅 {d['hl_imb']:+.2f}%")
+    if d['bitget_fr'] > 50: micro_alerts.append(f"🚨 资金费率极度拥挤: {d['bitget_fr']:+.2f}% 年化")
+    if d['coinbase_prem'] < -0.1: micro_alerts.append(f"🇺🇸 机构现货抛压: {d['coinbase_prem']:+.3f}%")
+    if d['hl_imb'] > 3.0: micro_alerts.append(f"📊 持仓量剧增: 24H变幅 {d['hl_imb']:+.2f}%")
+    elif d['hl_imb'] < -3.0: micro_alerts.append(f"📊 持仓量剧减: 24H变幅 {d['hl_imb']:+.2f}%")
     micro_text = "\n".join(micro_alerts) if micro_alerts else "  · 微观结构暂无极端异动"
 
     liquidity_warning = ""
@@ -323,14 +239,10 @@ def main():
     spx_display = f"{d['spx']:.1f}" if d['spx'] > 0 else "N/A"
     bj_time = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
 
-    if d['p_high_risk'] >= 0.50:
-        prob_icon = "🔴"
-    elif d['p_high_risk'] >= 0.30:
-        prob_icon = "🟠"
-    elif d['p_high_risk'] >= 0.15:
-        prob_icon = "🟡"
-    else:
-        prob_icon = "🟢"
+    if d['p_high_risk'] >= 0.50: prob_icon = "🔴"
+    elif d['p_high_risk'] >= 0.30: prob_icon = "🟠"
+    elif d['p_high_risk'] >= 0.15: prob_icon = "🟡"
+    else: prob_icon = "🟢"
 
     phase_text, cash_rec = get_dual_phase(d)
 
@@ -353,7 +265,6 @@ def main():
 
     breadth_display = f"{d['breadth_momentum']:+.2f}%"
     breadth_note = "负=小盘拖累/宽度恶化" if d['breadth_momentum'] < 0 else "正=小盘相对走强/宽度改善"
-
     us10y_rt_display = f"{d['us10y_rt']:.3f}%" if d['us10y_rt'] and d['us10y_rt'] > 0 else "N/A"
 
     text = f"""📊 **GMRE 4.1 全息风控晨报** - {d['asof']}
@@ -364,6 +275,9 @@ def main():
 😱 **情绪指数**: {d['fear_greed']} (Fear & Greed)
 {action_guide}
 {liquidity_warning}
+====================================
+🚦 **事件拦截器**: {d['event_perm']}
+  • 判决原因: {d['event_reason']}
 ====================================
 💵 **美元锚定区**:
   • DXY: {d['dxy']:.2f} (5y_pct={dxy_pct_str})
@@ -420,18 +334,10 @@ def main():
 """
 
     ts = str(int(time.time()))
-    payload = {
-        "timestamp": ts,
-        "sign": gen_sign(ts, SECRET),
-        "msg_type": "text",
-        "content": {"text": text}
-    }
+    payload = {"timestamp": ts, "sign": gen_sign(ts, SECRET), "msg_type": "text", "content": {"text": text}}
     r = requests.post(WEBHOOK, json=payload, timeout=10)
-    if r.status_code == 200 and r.json().get('code') == 0:
-        print("✅ GMRE 4.1 全息晨报已成功推送到飞书！")
-    else:
-        print(f"❌ 飞书推送失败: {r.text}")
-
+    if r.status_code == 200 and r.json().get('code') == 0: print("✅ GMRE 4.1 全息晨报已成功推送到飞书！")
+    else: print(f"❌ 飞书推送失败: {r.text}")
 
 if __name__ == "__main__":
     main()
