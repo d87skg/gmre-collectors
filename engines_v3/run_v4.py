@@ -28,19 +28,18 @@ def get_series_meta(sid, override_value=None):
     try:
         conn = sqlite3.connect(DB_PATH)
         try:
-            # 引入代理层，拦截 P1 降级异常，防止直接返回 N/A
             from core.data_proxy import load
             from core.errors import DataError
             
             try:
-                df = load(conn, sid, limit=1)
-                if not df.empty:
-                    date_str = pd.to_datetime(df.index[-1]).strftime('%Y-%m-%d')
-                    raw_val = float(df['value'].iloc[-1])
+                # 🆕 代理层返回的是 Series，索引是日期，值直接是数据
+                series = load(conn, sid, limit=1)
+                if not series.empty:
+                    date_str = pd.to_datetime(series.index[-1]).strftime('%Y-%m-%d')
+                    raw_val = float(series.iloc[-1])
                     value = override_value if override_value is not None else raw_val
                     return date_str, value
             except DataError:
-                # 如果是 P1 数据过期降级，我们仍然允许它输出旧值，但在日志中隐含
                 pass
         finally: 
             conn.close()
@@ -383,18 +382,16 @@ def main():
 
     print(f"\n┌{'─'*58}┐\n│  🚦 [Event Scenario] 事件情景推演与权限拦截        │\n└{'─'*58}┘")
     try:
-       # 🆕 动态获取真实的通胀数据
-        mock_cpi = 4.0 # 作为最终兜底值
+        # 🆕 动态获取真实的通胀数据
+        mock_cpi = 4.0 
         try:
             conn_cpi = sqlite3.connect(DB_PATH)
             try:
-                # 优先尝试 CPI_CORE，缺失则捕获异常不中断
                 try:
                     cpi_series = load(conn_cpi, 'CPI_CORE', limit=1, verbose=False, strict_fresh=False)
                 except DataError:
                     cpi_series = pd.Series(dtype=float)
                 
-                # 如果 CPI_CORE 缺失，降级尝试密歇根通胀预期
                 if cpi_series.empty:
                     try:
                         cpi_series = load(conn_cpi, 'MICH_1Y_EXPECT', limit=1, verbose=False, strict_fresh=False)

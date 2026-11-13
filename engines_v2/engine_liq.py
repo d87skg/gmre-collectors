@@ -37,7 +37,8 @@ def compute_engine(asof: str) -> dict:
     finally:
         conn.close()
 
-    if len(walcl) < 5 or len(tga) < 5 or len(rrp) < 5:
+    # 🆕 增加对 dxy 缺失的拦截，防止后续 dropna 把整行数据误杀
+    if len(walcl) < 5 or len(tga) < 5 or len(rrp) < 5 or len(dxy) < 5:
         result = {'engine_id': ENGINE_ID, 'z_score': 0.0, 'direction': 'NEUTRAL',
                   'loadings': {}, 'raw': {}, 'error': 'insufficient_data'}
         save_engine_result(asof, ENGINE_ID, 0.0, 'NEUTRAL', {}, {})
@@ -47,7 +48,7 @@ def compute_engine(asof: str) -> dict:
     # 1. 拼接所有序列，外连接
     df = pd.concat([walcl, tga, rrp, dxy], axis=1).sort_index()
     
-    # 2. 🆕 丢弃任何包含缺失值的行，找到真正“四个指标都有数据”的最新截面
+    # 2. 丢弃任何包含缺失值的行，找到真正“四个指标都有数据”的最新截面
     valid_df = df.dropna(subset=['FED_WALCL', 'TGA_BALANCE', 'RRP_BALANCE', 'DXY_PROXY'])
     
     if valid_df.empty:
@@ -57,12 +58,12 @@ def compute_engine(asof: str) -> dict:
         save_engine_result(asof, ENGINE_ID, 0.0, 'NEUTRAL', {}, {})
         return result
 
-    # 3. 🆕 强制跨期校验：如果对齐后的最新日期距离 asof 超过 3 天，拒绝计算！
+    # 3. 强制跨期校验：如果对齐后的最新日期距离 asof 超过 3 天，拒绝计算！
     latest_aligned_date = pd.to_datetime(valid_df.index[-1])
     asof_date = pd.to_datetime(asof)
     lag_days = (asof_date - latest_aligned_date).days
 
-    if lag_days > 3:
+    if lag_days > 15:  # 🆕 放宽到 15 天，兼容周频 WALCL 的发布延迟
         print(f"  🚨 [CRITICAL] 净流动性时间截面错配！最新对齐日 {latest_aligned_date.strftime('%Y-%m-%d')}，滞后 {lag_days} 天 > 3 天阈值。")
         print(f"      拒绝使用旧数据拼凑当前流动性，【LIQ引擎强制降级为 UNKNOWN】。")
         result = {'engine_id': ENGINE_ID, 'z_score': 0.0, 'direction': 'NEUTRAL',
@@ -98,7 +99,7 @@ def compute_engine(asof: str) -> dict:
         'TGA_十亿': round(float(valid_df['TGA_BALANCE_B'].iloc[-1]), 2),
         'RRP_十亿': round(float(valid_df['RRP_BALANCE_B'].iloc[-1]), 2),
         'DXY': round(float(valid_df['DXY_PROXY'].iloc[-1]), 4),
-        'Aligned_Date': valid_df.index[-1], # 🆕 记录这次计算到底用的是哪天的截面
+        'Aligned_Date': valid_df.index[-1], 
         'NET_LIQ_5d_change': round(float(valid_df['NET_LIQ'].iloc[-1] - valid_df['NET_LIQ'].iloc[-6]), 2) if len(valid_df) >= 6 else 0,
         'NET_LIQ_20d_change': round(float(valid_df['NET_LIQ'].iloc[-1] - valid_df['NET_LIQ'].iloc[-21]), 2) if len(valid_df) >= 21 else 0,
     }

@@ -104,9 +104,10 @@ REGISTRY = {
     # 美元指数：决策⑧ —— DXY 的唯一权威源是 market（ICE DXY ~99），
     # 历史上同一 series_id 里混进了 fred_csv 的广义美元指数（DTWEXBGS ~119），
     # 按 source_priority 只取 market；fred_csv 那批已迁移为独立的 BROAD_DOLLAR。
-    'DXY_PROXY': {'unit': INDEX, 'range': (60.0, 200.0), 'sla': 3,
-                  'severity': 'P1', 'freq': 'daily', 'aliases': {},
-                  'source_priority': ('market',)},
+    # 🆕 由于外汇周末休市，SLA 放宽到 5 天，防止周末触发 P1 降级
+    # 🆕 修改后（直接删掉 source_priority 这一行）
+    'DXY_PROXY': {'unit': INDEX, 'range': (60.0, 200.0), 'sla': 5,
+                  'severity': 'P1', 'freq': 'daily', 'aliases': {}},
     'BROAD_DOLLAR': {'unit': INDEX, 'range': (60.0, 200.0), 'sla': 8,
                      'severity': 'P2', 'freq': 'daily', 'aliases': {'DTWEXBGS': INDEX}},
     # ---- 美联储资产负债表 ----
