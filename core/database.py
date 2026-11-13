@@ -12,6 +12,57 @@ from .pit import estimated_available_at
 
 logger = logging.getLogger(__name__)
 
+
+# =============================================================================
+# v4.1 观测值写入辅助（append-only + 血缘）
+# =============================================================================
+def _coerce_obs_ts(v) -> str:
+    """把时间戳统一成可比较的全精度字符串。
+
+    保留原有粒度：日频序列保持 'YYYY-MM-DD'，日内序列保持 'YYYY-MM-DD HH:MM:SS'
+    ——**不得截断日内精度**，否则 BTC_OI 这类 288 点/天的序列会被压扁。
+    """
+    if isinstance(v, datetime):
+        return v.isoformat(sep=' ', timespec='seconds')
+    if hasattr(v, 'isoformat') and not isinstance(v, str):
+        return v.isoformat()[:19]
+    return str(v).strip()[:19]
+
+
+def _coerce_obs_date(v) -> str:
+    """从全精度时间戳派生日期部分 'YYYY-MM-DD'。"""
+    return _coerce_obs_ts(v)[:10]
+
+
+def _coerce_ingest(v) -> str:
+    """入库时刻统一成 'YYYY-MM-DD HH:MM:SS.mmm'（毫秒精度，用于唯一键排序）。"""
+    dt = v if isinstance(v, datetime) else datetime.now()
+    return dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+
+def _bump_ms(ingest_str: str, ms: int = 1) -> str:
+    """唯一键撞车时把 ingest_at 顺延 ms 毫秒。"""
+    try:
+        dt = datetime.strptime(ingest_str, '%Y-%m-%d %H:%M:%S.%f')
+    except ValueError:
+        dt = datetime.now()
+    from datetime import timedelta
+    return (dt + timedelta(milliseconds=ms)).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+
+def _same_value(a, b) -> bool:
+    """同值判定：两次轮询拿到同一个数时不应产生新行。"""
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    try:
+        fa, fb = float(a), float(b)
+    except (TypeError, ValueError):
+        return False
+    return abs(fa - fb) <= max(1e-12, 1e-9 * max(abs(fa), abs(fb)))
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
     source_id TEXT PRIMARY KEY,
@@ -39,17 +90,24 @@ CREATE TABLE IF NOT EXISTS series (
 CREATE TABLE IF NOT EXISTS observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     series_id TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
+    obs_ts TEXT NOT NULL,
+    obs_date TEXT NOT NULL,
+    timestamp TEXT GENERATED ALWAYS AS (obs_ts) VIRTUAL,
+    ingest_at TEXT,
     value REAL,
     revised_value REAL,
     source_timestamp TEXT,
-    retrieved_at TEXT NOT NULL,
+    retrieved_at TEXT,
     quality_score REAL DEFAULT 1.0,
     raw_hash TEXT,
-    source TEXT,
+    source TEXT NOT NULL DEFAULT 'unknown',
     unit TEXT,
     frequency TEXT,
-    UNIQUE(series_id, timestamp)
+    revision_of INTEGER,
+    import_batch TEXT,
+    obs_date_confidence TEXT NOT NULL DEFAULT 'derived',
+    rev_seq INTEGER NOT NULL DEFAULT 0,        -- 同一 (series, obs_ts, source) 的版本序号 0,1,2...
+    UNIQUE(series_id, obs_ts, source, rev_seq)
 );
 CREATE INDEX IF NOT EXISTS idx_obs_series_ts ON observations(series_id, timestamp);
 
@@ -119,20 +177,111 @@ class Database:
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
-    # ---------- observations ----------
-    def upsert_observation(self, obs: Observation) -> None:
+    # ---------- observations (v4.1: append-only + 血缘) ----------
+    def _resolve_obs_table(self) -> Optional[str]:
+        """返回当前可用的观测表名。
+
+        优先 'observations'（cutover 后即为 v2 表），否则退回 'observations_v2'
+        （--apply 迁移完成但尚未 cutover 的过渡态）。
+        两者都缺 obs_ts/obs_date 时返回 None，调用方必须拒绝写入。
+        """
+        for t in ('observations', 'observations_v2'):
+            cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info('{t}')")]
+            if cols and 'obs_ts' in cols and 'obs_date' in cols:
+                return t
+        return None
+
+    def insert_observation(self, series_id: str, obs_ts, value: Optional[float], *,
+                           obs_date: Optional[str] = None,
+                           source: Optional[str] = None,
+                           unit: Optional[str] = None,
+                           frequency: Optional[str] = None,
+                           ingest_at: Optional[datetime] = None,
+                           revised_value: Optional[float] = None,
+                           source_timestamp: Optional[str] = None,
+                           raw_hash: Optional[str] = None,
+                           quality_score: float = 1.0,
+                           obs_date_confidence: str = 'derived',
+                           import_batch: Optional[str] = None) -> tuple[int, bool]:
+        """追加式写入一条观测值。返回 (row_id, created)。
+
+        自然键 = (series_id, obs_ts, source)，obs_ts 保留**全精度**时间戳。
+        这点很关键：BTC_OI_VALUE_HIST 这类日内序列同一天有 288 个点，
+        若用 obs_date 做键，日内精度会被压扁成一天一条。
+
+        覆写冲突的三种处理（无 REPLACE，无覆盖）：
+        ① 同值幂等：同键已存在且值未变 -> 不新增行，返回旧 id（created=False）。
+           历史库里有约 34.9 万行属于这种重复轮询痕迹，幂等能从源头止住增长。
+        ② 异值修订：值变化 -> 追加新行，revision_of 链到上一条 id，旧行原样保留。
+           时间序由 ingest_at 表达，"最新版本" = ingest_at / id 最大的那条。
+        ③ 并发撞键：键已含 obs_ts，正常不会撞；万一并发插入同一键，
+           回读上一条并作为修订行重试，依然追加而非覆盖。
+        """
+        table = self._resolve_obs_table()
+        if table is None:
+            raise RuntimeError(
+                'observations 表尚未迁移（缺 obs_ts/obs_date），'
+                '请先运行 migrations/001_observations_v2.py --apply')
+
+        ts = _coerce_obs_ts(obs_ts)
+        od = obs_date or ts[:10]
+        src = source or 'unknown'
+        ing = _coerce_ingest(ingest_at)
+
         with self._lock:
-            self.conn.execute("""
-                INSERT OR REPLACE INTO observations
-                (series_id, timestamp, value, revised_value, source_timestamp,
-                 retrieved_at, quality_score, raw_hash, source, unit, frequency)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                obs.series_id, obs.timestamp.isoformat(), obs.value, obs.revision,
-                None, datetime.now().isoformat(), obs.quality_score, obs.raw_hash,
-                obs.source, obs.unit, obs.frequency,
-            ))
-            self.conn.commit()
+            prev = self._fetch_prev(table, series_id, ts, src)
+
+            # ① 同值幂等
+            if prev is not None and _same_value(prev['value'], value):
+                return int(prev['id']), False
+
+            for _ in range(2):
+                # ② 异值修订
+                rev_seq = int(prev['rev_seq']) + 1 if prev is not None else 0
+                revision_of = int(prev['id']) if prev is not None else None
+                try:
+                    cur = self.conn.execute(
+                        f"""INSERT INTO {table}
+                            (series_id, obs_ts, obs_date, ingest_at, value, revised_value,
+                             source_timestamp, retrieved_at, quality_score, raw_hash,
+                             source, unit, frequency, revision_of, import_batch,
+                             obs_date_confidence, rev_seq)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (series_id, ts, od, ing, value, revised_value,
+                         source_timestamp, ing, quality_score, raw_hash,
+                         src, unit, frequency, revision_of, import_batch,
+                         obs_date_confidence, rev_seq))
+                    self.conn.commit()
+                    return int(cur.lastrowid), True
+                except sqlite3.IntegrityError:
+                    # ③ 并发撞键：回读上一条，作为修订行重试
+                    prev = self._fetch_prev(table, series_id, ts, src)
+                    if prev is None:
+                        raise
+
+            raise RuntimeError(
+                f'insert_observation 键冲突无法消解: {series_id} @ {ts} / {src}')
+
+    def _fetch_prev(self, table: str, series_id: str, ts: str, src: str):
+        """取同键最新版本，用于同值判定、revision_of 链接与 rev_seq 递增。"""
+        return self.conn.execute(
+            f"""SELECT id, value, rev_seq FROM {table}
+                WHERE series_id = ? AND obs_ts = ? AND source = ?
+                ORDER BY rev_seq DESC, id DESC LIMIT 1""",
+            (series_id, ts, src)).fetchone()
+
+    def upsert_observation(self, obs: Observation) -> None:
+        """向后兼容包装。
+
+        语义已从 INSERT OR REPLACE 变为 append-only：同名同日的更新会生成
+        带 revision_of 的修订行，而不是覆盖历史。
+        """
+        self.insert_observation(
+            obs.series_id, obs.timestamp, obs.value,
+            source=obs.source, unit=obs.unit, frequency=obs.frequency,
+            revised_value=getattr(obs, 'revision', None),
+            raw_hash=obs.raw_hash, quality_score=obs.quality_score,
+        )
 
     def upsert_many(self, observations: List[Observation]) -> int:
         n = 0

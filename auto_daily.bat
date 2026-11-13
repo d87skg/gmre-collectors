@@ -1,6 +1,7 @@
 @echo off
 chcp 65001 >nul
-cd /d D:\HGZC
+:: 🆕 修改为当前脚本所在目录，保证在沙盒和生产都能正确运行
+cd /d %~dp0
 
 :: 自动创建 logs 文件夹（如果不存在）
 if not exist "logs" mkdir "logs"
@@ -15,7 +16,7 @@ echo   Run at %time% >> %logfile%
 echo ======================================================== >> %logfile%
 
 echo ========================================================
-echo   GMRE 4.0 Daily Pipeline
+echo   GMRE 4.1 Daily Pipeline
 echo ========================================================
 
 echo [1/16] Data correction (FRED/WTI/GOLD)...
@@ -41,9 +42,10 @@ if %errorlevel% neq 0 (
 echo [3/16] Smart gap check for market history...
 .venv\Scripts\python.exe -X utf8 tools\check_and_backfill.py
 
-echo [4/16] Sync feishu snapshot...
-.venv\Scripts\python.exe -X utf8 tools\sync_feishu_snapshot.py
-.venv\Scripts\python.exe -X utf8 tools\apply_feishu_override.py
+echo [4/16] Sync feishu snapshot [DISABLED - V4.1 Proxy Layer]...
+:: 🚨 核心重构：彻底切断飞书文本反解析覆写
+:: .venv\Scripts\python.exe -X utf8 tools\sync_feishu_snapshot.py
+:: .venv\Scripts\python.exe -X utf8 tools\apply_feishu_override.py
 
 echo [5/16] Compute percentiles...
 .venv\Scripts\python.exe -X utf8 tools\compute_percentile.py
@@ -77,8 +79,9 @@ echo [8.5/16] Copper spread engine...
 
 echo [9/16] GMRE V4 main engine...
 .venv\Scripts\python.exe -X utf8 engines_v3\run_v4.py
+:: 🆕 注意：如果 run_v4 触发 P0 阻断，这里会报 FATAL 并直接中断流水线，绝不推送假报告
 if %errorlevel% neq 0 (
-    echo FATAL: main engine failed!
+    echo FATAL: main engine failed or P0 blocked!
     exit /b 1
 )
 

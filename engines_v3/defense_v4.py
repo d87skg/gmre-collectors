@@ -11,24 +11,20 @@ import pandas as pd
 import json
 from datetime import datetime
 
-DB_PATH = 'data/macro.db'
+import os
+DB_PATH = os.environ.get('GMRE_DB_PATH', 'data/macro.db')
+
+from core import data_proxy   # 唯一取数入口（阶段 3 第三步接管）
 
 
 def _load(conn, sid, limit=60):
-    for col in ['timestamp', 'date']:
-        try:
-            df = pd.read_sql_query(
-                f"SELECT {col} AS dt, value FROM observations "
-                f"WHERE series_id=? ORDER BY {col} DESC LIMIT ?",
-                conn, params=(sid, limit)
-            )
-            if not df.empty:
-                df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
-                df = df.dropna(subset=['dt']).drop_duplicates(subset=['dt'], keep='first')
-                return df.sort_values('dt').set_index('dt')['value'].astype(float)
-        except Exception:
-            continue
-    return pd.Series(dtype=float)
+    """取数全部下沉到 core.data_proxy —— 签名、返回结构（datetime index 的 Series）不变。
+
+    原实现的三处隐患随之消失：裸 SQL 直接读 legacy `observations`、按行数限量导致
+    日内序列被压扁、`ORDER BY timestamp DESC` 让同日多版本随机取值。
+    P0 序列（TGA 等）陈旧/脏值会抛异常交给入口阻断；P1/P2 就地降级为空 Series。
+    """
+    return data_proxy.load_for_engine(conn, sid, limit, as_index='datetime')
 
 
 def evaluate_v4(asof: str) -> dict:

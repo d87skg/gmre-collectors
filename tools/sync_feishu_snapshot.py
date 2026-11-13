@@ -1,77 +1,36 @@
 # -*- coding: utf-8 -*-
-"""tools/sync_feishu_snapshot.py - 飞书快照防覆盖同步（Pandas 自动建表版）"""
-import requests
-import sqlite3
-import csv
-import io
-import os
-import pandas as pd
-from datetime import datetime
+"""tools/sync_feishu_snapshot.py - v4.1 已 DISARM（第三条入站通道）
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, 'data', 'macro.db')
+【历史行为（已废除）】
+从 GitHub 拉 d87skg/gmre-collectors 的 feishu_snapshot.csv（该 CSV 本身由
+"已推送文本 -> 正则反解析"生成），然后：
 
-def fetch_csv():
-    print(f"🔄 正在从 GitHub 拉取多分支 feishu_snapshot.csv ...")
-    urls = [
-        "https://raw.githubusercontent.com/d87skg/gmre-collectors/main/data/feishu_snapshot.csv",
-        "https://raw.githubusercontent.com/d87skg/gmre-collectors/data-highfreq/data/feishu_snapshot.csv"
-    ]
-    all_rows = []
-    for url in urls:
-        try:
-            r = requests.get(f"{url}?t={datetime.now().timestamp()}", timeout=15)
-            if r.status_code == 200:
-                all_rows.extend(list(csv.DictReader(io.StringIO(r.text))))
-                break
-        except Exception:
-            continue
-    return all_rows
+    df_new.to_sql('feishu_snapshot', conn, if_exists='replace')
 
-def main():
-    try:
-        rows = fetch_csv()
-        if not rows:
-            print("❌ 没有拉取到快照数据，跳过写入。")
-            return
+**整表替换** feishu_snapshot，并把 bitget_btc_fr 缝合进
+observations(BTC_FUNDING_RATE_1H, source='feishu_increment')。
 
-        # 1. 用 Pandas 处理去重，完全不需要手动拼 SQL
-        df_new = pd.DataFrame(rows)
-        df_new = df_new.drop_duplicates(subset=['timestamp'], keep='last')
-        df_new = df_new.sort_values('timestamp')
+危害：
+  * `if_exists='replace'` 会连表结构一起换掉，列名/历史直接丢失；
+  * 这是完全绕开本地采集的第二条"云端回流"通道，本地有没有采集到都不影响；
+  * 缝合行同样没有真实 obs_date。
 
-        conn = sqlite3.connect(DB_PATH)
-        
-        # 查库中当前最新时间
-        try:
-            latest_in_db = pd.read_sql_query("SELECT MAX(timestamp) as max_ts FROM feishu_snapshot", conn).iloc[0]['max_ts']
-        except Exception:
-            latest_in_db = None
+【现在】
+不联网、不写库。任何调用直接 BLOCKED 返回非零退出码。
+"""
+REPULL_DISABLED = True
+DISABLED_AT = '2026-11-11 (v4.1 phase 2)'
+REASON = ('飞书 CSV 是「文本 -> 正则」的产物，且以 if_exists=replace 整表替换，'
+          '构成绕开本地采集的云端回流通道')
 
-        # 2. 校验：如果库是空的，或者云端最新时间 > 库中时间
-        if not latest_in_db or df_new['timestamp'].max() > latest_in_db:
-            # 核心修复：不管表存不存在，直接整体 replace，完美解决列名不匹配
-            df_new.to_sql('feishu_snapshot', conn, if_exists='replace', index=False)
-            print(f"✅ 成功覆写 feishu_snapshot 表 ({len(df_new)} 条)")
-            
-            # 3. 缝合逻辑：取最新一条费率写入 observations
-            latest = df_new.iloc[-1]
-            fr = latest.get('bitget_btc_fr')
-            ts_str = latest['timestamp']
-            if fr and ts_str:
-                try:
-                    raw_fr = float(fr) / (3 * 365 * 100)
-                    conn.execute("INSERT OR REPLACE INTO observations (series_id, timestamp, value, source, retrieved_at) VALUES ('BTC_FUNDING_RATE_1H', ?, ?, 'feishu_increment', datetime('now'))", (ts_str, raw_fr))
-                    conn.commit()
-                    print(f"🪡 已缝合最新费率 {fr}% 至历史库。")
-                except Exception as e:
-                    print(f"⚠️ 费率缝合异常: {e}")
-        else:
-            print(f"⏸️ 云端最新快照 ({df_new['timestamp'].max()}) 并不比本地新 ({latest_in_db})，拒绝覆盖。")
 
-        conn.close()
-    except Exception as e:
-        print(f"\n❌ 致命错误: {e}")
+def main() -> int:
+    print('[BLOCKED] sync_feishu_snapshot 已在 v4.1 阶段 2 停用。')
+    print(f'          停用时间: {DISABLED_AT}')
+    print(f'          停用原因: {REASON}')
+    print('          官方数值请走 data_correction（FRED / NYFed / Treasury）。')
+    return 3
 
-if __name__ == "__main__":
-    main()
+
+if __name__ == '__main__':
+    raise SystemExit(main())

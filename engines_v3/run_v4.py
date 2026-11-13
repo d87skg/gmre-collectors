@@ -1,57 +1,55 @@
-"""engines_v3/run_v4.py - GMRE 4.1 完整集成版（事件拦截器 + 影子引擎 + 严格风控口径）"""
+"""engines_v3/run_v4.py - GMRE 4.1 完整集成版（代理层 + Preflight 深度缝合版）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-import io
-import contextlib
-import sqlite3
-import subprocess
-import hashlib
-import json
-import math
+import io, contextlib, sqlite3, subprocess, hashlib, json, math, pandas as pd
 from datetime import datetime
 
-from engines_v2 import (
-    engine_liq, engine_inf, engine_mon, engine_risk, engine_fis,
-    regime_map, yen_carry_state, liquidity_alert, hedge_advisor,
-    data_quality_check, dau_alert
-)
-from engines_v3 import (
-    stress_overlay_v2, defense_v4,
-    engine_mon_v2, engine_fis_v2, engine_inf_expect,
-    invalidation_conditions
-)
+from engines_v2 import (engine_liq, engine_inf, engine_mon, engine_risk, engine_fis, regime_map, yen_carry_state, liquidity_alert, hedge_advisor, data_quality_check, dau_alert)
+from engines_v3 import (stress_overlay_v2, defense_v4, engine_mon_v2, engine_fis_v2, engine_inf_expect, invalidation_conditions)
 from engines_v3.event_scenario_engine import evaluate_event_scenario, TradePerm
+from core.data_proxy import load
 
-try:
-    from tools.check_events import check_upcoming_events
-except ImportError:
-    check_upcoming_events = lambda **kwargs: []
-try:
-    from tools.rrp_guard import run_rrp_guard
-except ImportError:
-    run_rrp_guard = None
+try: from tools.check_events import check_upcoming_events
+except ImportError: check_upcoming_events = lambda **kwargs: []
+try: from tools.rrp_guard import run_rrp_guard
+except ImportError: run_rrp_guard = None
 
-DB_PATH = 'data/macro.db'
+from core.errors import preflight, print_preflight, DataError, handle
+
+DB_PATH = os.environ.get('GMRE_DB_PATH', 'data/macro.db')
 
 def get_git_commit():
-    try:
-        return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=os.path.dirname(__file__)).decode('utf-8').strip()[:8]
-    except Exception:
-        return "UNKNOWN"
+    try: return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=os.path.dirname(__file__)).decode('utf-8').strip()[:8]
+    except Exception: return "UNKNOWN"
 
 def get_series_meta(sid, override_value=None):
+    import warnings
     try:
         conn = sqlite3.connect(DB_PATH)
-        row = conn.execute("SELECT timestamp, value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 1", (sid,)).fetchone()
-        conn.close()
-        if row:
-            date_str = row[0].split(' ')[0].split('T')[0]
-            value = override_value if override_value is not None else float(row[1])
-            return date_str, value
-    except Exception: pass
-    if override_value is not None: return datetime.now().strftime('%Y-%m-%d'), override_value
+        try:
+            # 引入代理层，拦截 P1 降级异常，防止直接返回 N/A
+            from core.data_proxy import load
+            from core.errors import DataError
+            
+            try:
+                df = load(conn, sid, limit=1)
+                if not df.empty:
+                    date_str = pd.to_datetime(df.index[-1]).strftime('%Y-%m-%d')
+                    raw_val = float(df['value'].iloc[-1])
+                    value = override_value if override_value is not None else raw_val
+                    return date_str, value
+            except DataError:
+                # 如果是 P1 数据过期降级，我们仍然允许它输出旧值，但在日志中隐含
+                pass
+        finally: 
+            conn.close()
+    except Exception: 
+        pass
+    
+    if override_value is not None: 
+        return datetime.now().strftime('%Y-%m-%d'), override_value
     return "N/A", None
 
 def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_confirmed, p_r4_r5=None):
@@ -60,7 +58,6 @@ def compute_risk_gate(frag_level, stress_overall, contagion_status, systemic_con
         frag_score = float(frag_level.split('(')[1].split(')')[0])
         if not math.isfinite(frag_score): return 'UNKNOWN', '🚨 数值异常'
     except Exception: return 'SAFE_MODE', '🚨 计算故障'
-
     if systemic_confirmed: return 'BLACK', '🚨 系统性危机已确认'
 
     red_reasons = []
@@ -84,15 +81,36 @@ def get_dual_phase_guide(gate, frag_score, cali_score, scenario, dxy_pct):
     elif gate in ('ORANGE', 'YELLOW'): phase, emoji = '过渡期（政策底已现，市场底待确认）', '🟡'
     elif dxy_pct is None: phase, emoji = '过渡期（数据缺失，默认防守）', '🟡'
     else: phase, emoji = '下半场（降息重估）', '🟢'
-
     if phase.startswith('上半场'): cash, gold, note = '50-70%', '5-10%', '现金为王，等右侧信号'
     elif phase.startswith('过渡'): cash, gold, note = '40-60%', '7-10%', '保持防守，分批左侧埋伏'
     else: cash, gold, note = '10-20%', '5-10%', '子弹打出去，享受估值重估'
     return {'phase': phase, 'phase_emoji': emoji, 'cash_recommendation': cash, 'gold_recommendation': gold, 'note': note}
 
+_DATA_HEALTH = {}
+
+def _probe(series_id):
+    for tbl, col in (('observations_v2', 'obs_date'), ('observations', 'timestamp')):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            row = conn.execute(f"SELECT MAX({col}) FROM {tbl} WHERE series_id=?", (series_id,)).fetchone()
+            conn.close()
+            if row and row[0]: return {'obs_date': str(row[0])[:10]}
+        except sqlite3.OperationalError: continue
+    return None
+
+def data_preflight(asof=None):
+    report = preflight(_probe, asof=asof)
+    print_preflight(report)
+    _DATA_HEALTH['preflight'] = {'verdict': report['verdict'], 'block': len(report['block']), 'degrade': len(report['degrade'])}
+    if report['verdict'] == 'BLOCK':
+        first = report['block'][0]
+        from core.errors import DataStaleError
+        raise DataStaleError(first['series_id'], first['days_lag'], first['sla_days'], obs_date=first['obs_date'])
+
 def main():
     asof = datetime.now().strftime('%Y-%m-%d')
     print(f"\n{'='*60}\n  GMRE 4.1 完整版 - {asof}\n{'='*60}\n")
+    data_preflight(asof=asof)
 
     print(f"{'-'*50}\n  📅 宏观事件倒计时检查\n{'-'*50}")
     check_upcoming_events(config_path="config/events_calendar.yaml")
@@ -157,8 +175,7 @@ def main():
     except Exception as e: print(f"  ⚠️ Fragility 提前计算失败: {e}")
 
     print(f"\n{'─'*50}\n  🔍 核心数据溯源（日频决策口径唯一）")
-    rrp_override = None
-    rrp_source_tag = ""
+    rrp_override, rrp_source_tag = None, ""
     if run_rrp_guard is not None:
         try:
             _g = run_rrp_guard(verbose=False)
@@ -224,7 +241,6 @@ def main():
     except Exception as e: print(f"  ⚠️ Stress异常: {e}")
 
     print(f"\n┌{'─'*58}┐\n│  【轨道3】多维度增强引擎                            │\n└{'─'*58}┘\n")
-
     from engines_v3.factor_attribution import compute_factor_attribution
     from engines_v3.portfolio_optimizer import get_portfolio_advice
     port_weights, _ = get_portfolio_advice('ORANGE', frag_score_val)
@@ -237,8 +253,7 @@ def main():
     print(f"  [Dollar_Anchor] ", end='', flush=True)
     try:
         from engines_v3 import dollar_anchor
-        with contextlib.redirect_stdout(io.StringIO()):
-            dollar_result = dollar_anchor.compute_dollar_anchor(asof)
+        with contextlib.redirect_stdout(io.StringIO()): dollar_result = dollar_anchor.compute_dollar_anchor(asof)
         print(f"{dollar_result.get('scenario_msg', 'N/A')}")
     except Exception as e: print(f"❌ {str(e)[:50]}")
 
@@ -246,12 +261,9 @@ def main():
     print(f"  [Chain_E]       ", end='', flush=True)
     try:
         from engines_v3 import transmission_graph
-        with contextlib.redirect_stdout(io.StringIO()):
-            trans = transmission_graph.compute_transmission(asof)
+        with contextlib.redirect_stdout(io.StringIO()): trans = transmission_graph.compute_transmission(asof)
         for c in trans.get('chains', []):
-            if 'Chain E' in c.get('name', ''):
-                chain_e_result = c
-                break
+            if 'Chain E' in c.get('name', ''): chain_e_result = c; break
         if chain_e_result: print(f"{chain_e_result.get('status', 'N/A')} (激活度={chain_e_result.get('activation', 0):.3f})")
         else: print("N/A")
     except Exception as e: print(f"❌ {str(e)[:50]}")
@@ -260,8 +272,7 @@ def main():
     print(f"  [CALI]          ", end='', flush=True)
     try:
         from engines_v3 import cali_engine
-        with contextlib.redirect_stdout(io.StringIO()):
-            cali_result = cali_engine.compute_cali(asof)
+        with contextlib.redirect_stdout(io.StringIO()): cali_result = cali_engine.compute_cali(asof)
         print(f"{cali_result.get('cali_score', 0):.1f}/100 ({cali_result.get('level', 'N/A')})")
     except Exception as e: print(f"❌ {str(e)[:50]}")
 
@@ -269,8 +280,7 @@ def main():
     print(f"  [Crowding]      ", end='', flush=True)
     try:
         from engines_v3 import crowding_engine
-        with contextlib.redirect_stdout(io.StringIO()):
-            crowding_result = crowding_engine.compute_crowding(asof)
+        with contextlib.redirect_stdout(io.StringIO()): crowding_result = crowding_engine.compute_crowding(asof)
         print(f"{crowding_result.get('score', 0):.1f}/100 ({crowding_result.get('level', 'N/A')})")
     except Exception as e: print(f"❌ {str(e)[:50]}")
 
@@ -286,12 +296,9 @@ def main():
         print(f"  [{name:12s}] ", end='', flush=True)
         try:
             if name == 'Probability':
-                r = fn()
-                p_r4_r5_val = r['high_risk_prob']
-                print(f"       ↳ 最终概率 P(R4+R5)={p_r4_r5_val*100:.4f}%")
+                r = fn(); p_r4_r5_val = r['high_risk_prob']; print(f"       ↳ 最终概率 P(R4+R5)={p_r4_r5_val*100:.4f}%")
             else:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    r = fn()
+                with contextlib.redirect_stdout(io.StringIO()): r = fn()
                 if name == 'Positioning': print(f"Stress={r['positioning_stress']}/100 ({r['level']})")
                 elif name == 'Velocity': print(f"Breadth={r['breadth']['breadth_pct']}%")
                 elif name == 'Contagion': print(f"状态={r.get('status', 'N/A')}")
@@ -300,16 +307,13 @@ def main():
     print(f"\n┌{'─'*58}┐\n│  【轨道4】GMRE 4.1 智能层                            │\n└{'─'*58}┘\n")
 
     cu_spread = get_series_meta('CU_SPREAD_PCT')[1]
-    if cu_spread:
-        if abs(cu_spread) > 2.0: print(f"  [CU Spread]  🚨 内外盘极值价差: {cu_spread:+.2f}% (逼仓风险)")
-        else: print(f"  [CU Spread]  🟢 内外盘价差: {cu_spread:+.2f}% (正常)")
+    if cu_spread: print(f"  [CU Spread]  🚨 内外盘极值价差: {cu_spread:+.2f}% (逼仓风险)" if abs(cu_spread) > 2.0 else f"  [CU Spread]  🟢 内外盘价差: {cu_spread:+.2f}% (正常)")
 
     print(f"  [CAPS Commodity] ", end='', flush=True)
     try:
         from engines_v3 import caps_engine
         with contextlib.redirect_stdout(io.StringIO()):
-            cu = caps_engine.compute_caps_risk("SHFE_COPPER")
-            al = caps_engine.compute_caps_risk("SHFE_ALUMINUM")
+            cu = caps_engine.compute_caps_risk("SHFE_COPPER"); al = caps_engine.compute_caps_risk("SHFE_ALUMINUM")
         output_parts = []
         if cu: output_parts.append(f"铜 {'🚨' if cu['caps_score'] > 60 else '🟡'} {cu['caps_score']}")
         if al: output_parts.append(f"铝 {'🚨' if al['caps_score'] > 60 else '🟡'} {al['caps_score']}")
@@ -319,13 +323,10 @@ def main():
     print(f"  [LTI Clearing]  ", end='', flush=True)
     try:
         from engines_v3 import lti_engine
-        with contextlib.redirect_stdout(io.StringIO()):
-            lti = lti_engine.compute_lti(asof)
+        with contextlib.redirect_stdout(io.StringIO()): lti = lti_engine.compute_lti(asof)
         icon = "🚨" if lti.get('level') in ("EXTREME", "HIGH") else "🟡" if lti.get('level') == "MEDIUM" else "🟢"
         raw_data = lti.get('raw', {})
-        fr_diff = raw_data.get('fr_cross_diff', 0.0)
-        hl_imb = raw_data.get('hl_imbalance', 0.0)
-        print(f"{icon} {lti.get('lti_score', 0)}/100 ({lti.get('level', 'UNKNOWN')}) | FR差异 {fr_diff}% | 持仓24H变幅 {hl_imb:+.2f}%")
+        print(f"{icon} {lti.get('lti_score', 0)}/100 ({lti.get('level', 'UNKNOWN')}) | FR差异 {raw_data.get('fr_cross_diff', 0.0)}% | 持仓24H变幅 {raw_data.get('hl_imbalance', 0.0):+.2f}%")
     except Exception as e: print(f"❌ {str(e)[:50]}")
 
     print(f"\n┌{'─'*58}┐\n│  【尾轨】尾部状态 + 预警 + 对冲                    │\n└{'─'*58}┘\n")
@@ -354,8 +355,7 @@ def main():
     try:
         hedge = hedge_advisor.compute_hedge(asof)
         hedge_pct = hedge.get('total_hedge_pct', 0.0) * 100
-        if hedge_pct > 0: print(f"  🛡️ 建议对冲: {hedge_pct:.1f}%")
-        else: print(f"  ✅ 尾部对冲: 无需求")
+        print(f"  🛡️ 建议对冲: {hedge_pct:.1f}%" if hedge_pct > 0 else f"  ✅ 尾部对冲: 无需求")
     except Exception as e: print(f"  ⚠️ 对冲模块异常: {e}")
 
     print(f"\n┌{'─'*58}┐\n│  【执行】防线0-7                                    │\n└{'─'*58}┘\n")
@@ -364,16 +364,14 @@ def main():
         defense = defense_v4.evaluate_v4(asof)
         print(f"  已突破防线: {defense['triggered_count']}/7 | 系统性危机: {'🚨 是' if defense['systemic_confirmed'] else '🟢 否'}\n")
         for l in defense['lines']:
-            icon = '🚨' if l['triggered'] else '⏸️'
-            print(f"  {icon} [{l['line']}] {l['name']}")
+            print(f"  {'🚨' if l['triggered'] else '⏸️'} [{l['line']}] {l['name']}")
     except Exception as e: print(f"  ⚠️ 防线异常: {e}")
 
     contagion_status = 'NORMAL'
     gate, gate_msg = compute_risk_gate(frag_level, stress.get('overall', ''), contagion_status, stress.get('systemic_confirmed', False), p_r4_r5=p_r4_r5_val)
 
     print(f"\n┌{'─'*58}┐\n│  【最终】Risk Gate 风险等级                        │\n└{'─'*58}┘\n")
-    print(f"  {gate_msg}")
-    print(f"  Risk Gate: {gate}")
+    print(f"  {gate_msg}\n  Risk Gate: {gate}")
 
     dxy_pct = dollar_result.get('dxy_5y_pct') if dollar_result else None
     cali_score = cali_result.get('cali_score') if cali_result else None
@@ -381,27 +379,14 @@ def main():
     try:
         phase_guide = get_dual_phase_guide(gate, frag_score_val, cali_score, scenario, dxy_pct)
         print(f"\n┌{'─'*58}┐\n│  【双阶段】当前所处阶段                            │\n└{'─'*58}┘\n")
-        print(f"  {phase_guide['phase_emoji']} {phase_guide['phase']}")
-        print(f"  💰 现金建议: {phase_guide['cash_recommendation']}")
-        print(f"  🥇 黄金建议: {phase_guide['gold_recommendation']}")
-        print(f"  💡 {phase_guide['note']}")
+        print(f"  {phase_guide['phase_emoji']} {phase_guide['phase']}\n  💰 现金建议: {phase_guide['cash_recommendation']}\n  🥇 黄金建议: {phase_guide['gold_recommendation']}\n  💡 {phase_guide['note']}")
     except Exception as e: print(f"  ⚠️ 双阶段指南异常: {e}")
 
-    # =========================================================================
-    # 🆕 事件情景推演与拦截器
-    # =========================================================================
     print(f"\n┌{'─'*58}┐\n│  🚦 [Event Scenario] 事件情景推演与权限拦截        │\n└{'─'*58}┘")
     try:
-        # 构造输入数据（这里用数据库里最新的值模拟，实际周三CPI需要手动传入cpi_core_yoy）
-        # 假设当前核心CPI为 4.0% (演示用)
         mock_cpi = 4.0
-        
-        # SOFR-EFFR
-        sofr = get_series_meta('SOFR')[1] or 0
-        effr = get_series_meta('EFFR')[1] or 0
+        sofr, effr = get_series_meta('SOFR')[1] or 0, get_series_meta('EFFR')[1] or 0
         sofr_effr = (sofr - effr) * 100
-        
-        # HY Spread 5日变化
         hy_now = get_series_meta('HY_SPREAD')[1] or 0
         hy_prev = 0
         try:
@@ -411,46 +396,24 @@ def main():
             conn.close()
         except: pass
         hy_chg = (hy_now - hy_prev) if hy_prev else 0
-        
-        # 铜价差
         cu_sp = cu_spread if cu_spread else 0
-        
-        # LME 铜短期收益（日频拿不到5min，暂用0代替）
-        lme_ret = 0.0
-        
-        perm, reason, is_contagion = evaluate_event_scenario(
-            cpi_core_yoy=mock_cpi,
-            sofr_effr_spread=sofr_effr,
-            hy_spread_chg=hy_chg,
-            cu_spread=cu_sp,
-            lme_cu_5min_ret=lme_ret,
-            margin_hike=False,
-            is_event_day=True,
-            minutes_since_release=120 # 假设当前处于发布后 2 小时
-        )
-        print(f"  当前权限判定: {perm.name}")
-        print(f"  拦截原因: {reason}")
-        print(f"  传染警报: {'🚨 是' if is_contagion else '🟢 否'}")
-        
-        # 将结果存入全局变量，供飞书读取
-        global event_perm_name, event_perm_reason
-        event_perm_name = perm.name
-        event_perm_reason = reason
 
+        perm, reason, is_contagion = evaluate_event_scenario(
+            cpi_core_yoy=mock_cpi, sofr_effr_spread=sofr_effr, hy_spread_chg=hy_chg,
+            cu_spread=cu_sp, lme_cu_5min_ret=0.0, margin_hike=False, is_event_day=True, minutes_since_release=120)
+        print(f"  当前权限判定: {perm.name}\n  拦截原因: {reason}\n  传染警报: {'🚨 是' if is_contagion else '🟢 否'}")
+        global event_perm_name, event_perm_reason
+        event_perm_name, event_perm_reason = perm.name, reason
     except Exception as e:
         print(f"  ❌ 事件引擎计算失败: {e}")
-        event_perm_name = "UNKNOWN"
-        event_perm_reason = str(e)
-    # =========================================================================
+        event_perm_name, event_perm_reason = "UNKNOWN", str(e)
 
-    # 影子模式
     try:
         from engines_v3.risk_budget_engine import compute_shadow_weights
         print(f"\n┌{'─'*58}┐\n│  🧪 [Shadow Mode] 风险预算影子引擎测试              │\n└{'─'*58}┘")
         shadow_weights = compute_shadow_weights(gate)
         if shadow_weights:
-            log_dir = "logs"
-            os.makedirs(log_dir, exist_ok=True)
+            log_dir = "logs"; os.makedirs(log_dir, exist_ok=True)
             log_file = os.path.join(log_dir, "shadow_portfolio.log")
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"[{asof}] Gate={gate} | Shadow_Weights={shadow_weights}\n")
@@ -465,36 +428,35 @@ def main():
     except Exception: pass
     _frag_display = frag_level if frag_level != 'N/A' else "N/A"
 
-    print(f"\n{'='*60}")
-    print(f"  GMRE 4.1 运行完成")
-    print(f"  Base Regime: {_regime_display} | Fragility: {_frag_display} | Risk Gate: {gate}")
-    print(f"{'='*60}\n")
+    print(f"\n{'='*60}\n  GMRE 4.1 运行完成\n  Base Regime: {_regime_display} | Fragility: {_frag_display} | Risk Gate: {gate}\n{'='*60}\n")
 
-    # 落表逻辑保持不变...
     try:
         snapshot_str = json.dumps(input_snapshot, sort_keys=True)
         input_hash = hashlib.sha256(snapshot_str.encode('utf-8')).hexdigest()[:16]
         code_commit = get_git_commit()
         conn = sqlite3.connect(DB_PATH)
-        conn.execute("""CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)""")
-        conn.execute("""INSERT OR REPLACE INTO daily_summary (asof_date, risk_gate, stress_state, frag_level) VALUES (?, ?, ?, ?)""", (asof, gate, stress.get('overall', 'NONE'), frag_level))
-        conn.execute("""CREATE TABLE IF NOT EXISTS predictions_log (forecast_date TEXT PRIMARY KEY, model_version TEXT, code_commit TEXT, input_snapshot_hash TEXT, regime TEXT, p_r4_r5 REAL, fragility_score REAL, risk_gate TEXT, data_quality_state TEXT, details_json TEXT)""")
+        conn.execute("CREATE TABLE IF NOT EXISTS daily_summary (asof_date TEXT PRIMARY KEY, risk_gate TEXT, stress_state TEXT, frag_level TEXT)")
+        conn.execute("INSERT OR REPLACE INTO daily_summary (asof_date, risk_gate, stress_state, frag_level) VALUES (?, ?, ?, ?)", (asof, gate, stress.get('overall', 'NONE'), frag_level))
+        conn.execute("CREATE TABLE IF NOT EXISTS predictions_log (forecast_date TEXT PRIMARY KEY, model_version TEXT, code_commit TEXT, input_snapshot_hash TEXT, regime TEXT, p_r4_r5 REAL, fragility_score REAL, risk_gate TEXT, data_quality_state TEXT, details_json TEXT)")
         details = {
-            "regime": regime, "stress": stress.get('overall', 'NONE'),
-            "fragility_level": frag_level, "gate_msg": gate_msg, "p_r4_r5": p_r4_r5_val,
-            "dollar_anchor": dollar_result.get('scenario') if dollar_result else None,
-            "cali_score": cali_result.get('cali_score') if cali_result else None,
-            "crowding_score": crowding_result.get('score') if crowding_result else None,
-            "micro_trigger": micro_res, "factor_concentration": factor_res,
-            "data_audit": {"status": audit_status},
-            "event_interceptor": {"perm": event_perm_name, "reason": event_perm_reason} # 🆕 写入落表日志
+            "regime": regime, "stress": stress.get('overall', 'NONE'), "fragility_level": frag_level, "gate_msg": gate_msg, "p_r4_r5": p_r4_r5_val,
+            "dollar_anchor": dollar_result.get('scenario') if dollar_result else None, "cali_score": cali_result.get('cali_score') if cali_result else None,
+            "crowding_score": crowding_result.get('score') if crowding_result else None, "micro_trigger": micro_res, "factor_concentration": factor_res,
+            "data_audit": {"status": audit_status}, "event_interceptor": {"perm": event_perm_name, "reason": event_perm_reason},
+            "data_health": _DATA_HEALTH.get('preflight', {}),
         }
         cursor = conn.cursor()
-        cursor.execute("""INSERT OR REPLACE INTO predictions_log (forecast_date, model_version, code_commit, input_snapshot_hash, regime, p_r4_r5, fragility_score, risk_gate, data_quality_state, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (asof, 'GMRE_4.1', code_commit, input_hash, regime_label, p_r4_r5_val, frag_score_val, gate, audit_status, json.dumps(details, ensure_ascii=False)))
+        cursor.execute("INSERT OR REPLACE INTO predictions_log (forecast_date, model_version, code_commit, input_snapshot_hash, regime, p_r4_r5, fragility_score, risk_gate, data_quality_state, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (asof, 'GMRE_4.1', code_commit, input_hash, regime_label, p_r4_r5_val, frag_score_val, gate, audit_status, json.dumps(details, ensure_ascii=False)))
         print(f"✅ [P0-B] 预测日志已归档/覆盖 (Hash: {input_hash})")
-        conn.commit()
-        conn.close()
+        conn.commit(); conn.close()
     except Exception as e: print(f"❌ [P0-B] 预测日志归档失败: {e}")
 
+def guarded_main():
+    try:
+        main()
+        return 0
+    except DataError as e:
+        return handle(e)
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(guarded_main())

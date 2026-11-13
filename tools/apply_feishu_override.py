@@ -1,139 +1,144 @@
 # -*- coding: utf-8 -*-
-"""tools/apply_feishu_override.py - 飞书快照（3σ异常熔断 + source精确判断版）"""
+"""tools/apply_feishu_override.py - v4.1 已退役写库能力，改为隔离到 quarantine
+
+【历史行为（已废除）】
+读 feishu_snapshot 的最新一行，把 15 个字段按硬编码乘数（TGA ×1000、
+准备金 ×1e6 …）换算后 `INSERT OR REPLACE INTO observations`，source 统一
+写成 'feishu_override'。后果就是审计里的四条致命问题：
+
+  1. 真理源倒挂 —— 一条从"已发送文本"正则反解出来的数字，优先级高于
+     FRED / NYFed / Treasury 的官方读数；
+  2. 时间戳篡改 —— 写入日期取报文时间，不是真实观测日，周末也照打一针；
+  3. 量纲错位 —— 飞书原文是"十亿美元"，乘数写成 1000 后变成"百万美元"，
+     结果与 TGA_DAILY（treasury_fiscal_data, 真·百万美元）混在同一张表里；
+  4. 无锁覆写 —— 无版本、无 revision、无冲突检测，直接 REPLACE。
+
+【现在】
+只做一件事：把飞书数值搬进 `quarantine` 隔离区（带原始值、乘数、来源、
+捕获时刻），供人工审计比对。**永不写入 observations。**
+官方数值一律由 FRED / NYFed / Treasury 经 append-only 管道入库。
+"""
+import json
 import sqlite3
 from datetime import datetime
-import numpy as np
+from pathlib import Path
 
-DB_PATH = 'data/macro.db'
+ROOT = Path(__file__).resolve().parents[1]
+SANDBOX_ROOTS = (Path(r'D:\HGZC-v41-sandbox'), Path(r'D:\HGZC-v41-sandbox-collectors'))
+DB_PATH = ROOT / 'data' / 'macro.db'
 
-LOCAL_REALTIME_FIELDS = {
-    'GOLD_PRICE', 'WTI_OIL', 'YC10Y', 'YC2Y', 'YC30Y', 'VIX',
-}
-
+# 原映射保留下来仅作"审计对照表"，不再参与任何写库
 OVERRIDE_MAP = {
-    'gold':         ('GOLD_PRICE', 1.0),
-    'oil':          ('WTI_OIL', 1.0),
-    'dxy':          ('DXY_PROXY', 1.0),
-    'usdjpy':       ('USD_JPY', 1.0),
-    'vix':          ('VIX', 1.0),
-    'us_10y':       ('YC10Y', 1.0),
-    'us_2y':        ('YC2Y', 1.0),
-    'us_30y':       ('YC30Y', 1.0),
-    'hy_oas_bp':    ('HY_SPREAD', 0.01),
-    'hy_ccc_bp':    ('HY_CCC_OAS', 0.01),
-    'sofr':         ('SOFR', 1.0),
-    'effr':         ('EFFR', 1.0),
-    'rrp_b':        ('RRP_BALANCE', 1.0),
-    'tga_b':        ('TGA_BALANCE', 1000.0),
-    'reserve_t':    ('RESERVE_BALANCE', 1000000.0),
+    'gold':         ('GOLD_PRICE', 1.0, 'usd/oz'),
+    'oil':          ('WTI_OIL', 1.0, 'usd/bbl'),
+    'dxy':          ('DXY_PROXY', 1.0, 'index'),
+    'usdjpy':       ('USD_JPY', 1.0, 'jpy'),
+    'vix':          ('VIX', 1.0, 'index'),
+    'us_10y':       ('YC10Y', 1.0, '%'),
+    'us_2y':        ('YC2Y', 1.0, '%'),
+    'us_30y':       ('YC30Y', 1.0, '%'),
+    'hy_oas_bp':    ('HY_SPREAD', 0.01, '%'),
+    'hy_ccc_bp':    ('HY_CCC_OAS', 0.01, '%'),
+    'sofr':         ('SOFR', 1.0, '%'),
+    'effr':         ('EFFR', 1.0, '%'),
+    'rrp_b':        ('RRP_BALANCE', 1.0, 'billion_usd'),
+    'tga_b':        ('TGA_BALANCE', 1000.0, 'billion_usd -> million_usd (*1000)'),
+    'reserve_t':    ('RESERVE_BALANCE', 1000000.0, 'trillion_usd -> million_usd (*1e6)'),
 }
 
+QUARANTINE_DDL = """
+CREATE TABLE IF NOT EXISTS quarantine (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    series_id         TEXT NOT NULL,
+    obs_date          TEXT,
+    raw_value         REAL,
+    normalized_value  REAL,
+    multiplier        REAL,
+    unit              TEXT,
+    source            TEXT NOT NULL DEFAULT 'feishu_override',
+    reason            TEXT,
+    payload           TEXT,
+    captured_at       TEXT NOT NULL,
+    UNIQUE(series_id, obs_date, source)
+)
+"""
 
-def check_anomaly(conn, sid, new_val):
+
+def _assert_sandbox(path: Path) -> None:
+    resolved = path.resolve()
+    ok = any(resolved == r.resolve() or r.resolve() in resolved.parents
+             for r in SANDBOX_ROOTS)
+    if not ok:
+        raise SystemExit(f'DISARMED: {resolved} 不在沙盒内，已拒绝执行。')
+
+
+def main() -> int:
+    _assert_sandbox(DB_PATH)
+    if not DB_PATH.exists():
+        print(f'ℹ️ 沙盒内无数据库（采集仓副本正常如此）: {DB_PATH}，跳过。')
+        return 0
+
+    conn = sqlite3.connect(str(DB_PATH), timeout=15)
     try:
-        df = conn.execute(
-            "SELECT value FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 20",
-            (sid,)
-        ).fetchall()
-        if len(df) < 10:
-            return False, None
-        vals = [float(r[0]) for r in df]
-        mean = np.mean(vals)
-        std = np.std(vals)
-        if std == 0:
-            return False, None
-        z_score = abs(new_val - mean) / std
-        if z_score > 3.0:
-            return True, z_score
-        return False, z_score
-    except Exception:
-        return False, None
+        try:
+            cur = conn.execute('SELECT * FROM feishu_snapshot ORDER BY timestamp DESC LIMIT 1')
+        except sqlite3.OperationalError:
+            print('ℹ️ feishu_snapshot 表不存在，无隔离对象。')
+            return 0
 
-
-def get_local_latest(conn, sid):
-    """返回 (date, value, source)"""
-    row = conn.execute(
-        "SELECT timestamp, value, source FROM observations WHERE series_id=? ORDER BY timestamp DESC LIMIT 1",
-        (sid,)
-    ).fetchone()
-    if row:
-        date_str = row[0].split(' ')[0].split('T')[0]
-        return date_str, float(row[1]), (row[2] or '')
-    return None, None, ''
-
-
-def main():
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    try:
-        cursor = conn.execute("SELECT * FROM feishu_snapshot ORDER BY timestamp DESC LIMIT 1")
-        row = cursor.fetchone()
+        row = cur.fetchone()
         if not row:
-            print("❌ feishu_snapshot 表为空")
-            return
+            print('❌ feishu_snapshot 表为空，无隔离对象')
+            return 0
 
-        cols = [d[0] for d in cursor.description]
+        cols = [d[0] for d in cur.description]
         latest = dict(zip(cols, row))
-        feishu_date = latest['timestamp'].split(' ')[0]
+        feishu_date = str(latest.get('timestamp') or '')[:10]
+        captured = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        print(f"🔄 飞书快照日期: {feishu_date}")
+        conn.execute(QUARANTINE_DDL)
+        conn.commit()
 
-        count = 0
-        anomalies = 0
-        skipped_realtime = 0
-        for field, (series_id, multiplier) in OVERRIDE_MAP.items():
+        moved = 0
+        skipped = 0
+        for field, (series_id, multiplier, unit) in OVERRIDE_MAP.items():
             val = latest.get(field)
             if val is None or val == '':
                 continue
-
             try:
-                val = float(val) * multiplier
-
-                local_date, local_val, local_source = get_local_latest(conn, series_id)
-
-                # 1. 本地日期 > 飞书日期则跳过（防旧覆盖）
-                if local_date and local_date > feishu_date:
-                    print(f"  ⏸️ {series_id:15s} 跳过覆写 (本地 {local_date} > 飞书 {feishu_date})")
-                    continue
-
-                # 2. 本地实时源优先：只有"本地实时源"+"今日"+"非昨天飞书写入"才跳过
-                #    关键修复：如果 source == 'feishu_override'，说明是昨天飞书写的幽灵数据，允许今天覆写
-                today_str = datetime.now().strftime('%Y-%m-%d')
-                if series_id in LOCAL_REALTIME_FIELDS and local_date == today_str:
-                    if local_source and local_source != 'feishu_override':
-                        # 真正的本地实时源（sina/yahoo/stooq/fred_csv等），跳过飞书覆写
-                        print(f"  ⏸️ {series_id:15s} 跳过覆写 (本地今日实时源 {local_source}，值 {local_val:.4f})")
-                        skipped_realtime += 1
-                        continue
-                    else:
-                        # source 是 feishu_override，说明是昨天飞书写的幽灵数据，允许今日覆写
-                        print(f"  🔄 {series_id:15s} 覆盖昨天飞书幽灵值 ({local_val:.4f}) → 今日飞书 {val:.4f}")
-
-                # 3. 3σ 异常熔断
-                if series_id in ['GOLD_PRICE', 'WTI_OIL', 'DXY_PROXY', 'USD_JPY', 'VIX', 'YC10Y', 'YC2Y', 'YC30Y']:
-                    is_anomaly, z = check_anomaly(conn, series_id, val)
-                    if is_anomaly:
-                        print(f"  🚨 {series_id:15s} 触发 3σ 熔断! (新值={val:.2f}, Z={z:.2f})，拒绝覆写！")
-                        anomalies += 1
-                        continue
-
-                # 4. 正常覆写
+                raw = float(val)
+                norm = raw * multiplier
                 conn.execute(
-                    """INSERT OR REPLACE INTO observations
-                       (series_id, timestamp, value, source, retrieved_at)
-                       VALUES (?, ?, ?, 'feishu_override', datetime('now'))""",
-                    (series_id, feishu_date, val)
-                )
-                count += 1
-                print(f"  ✅ {series_id:15s} = {val:.4f} (源: 飞书)")
+                    """INSERT OR IGNORE INTO quarantine
+                       (series_id, obs_date, raw_value, normalized_value, multiplier,
+                        unit, source, reason, payload, captured_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (series_id, feishu_date, raw, norm, multiplier, unit,
+                     'feishu_override',
+                     'v4.1: 飞书文本回读值，禁止进入 observations',
+                     json.dumps({field: val}, ensure_ascii=False),
+                     captured))
+                moved += 1
             except Exception as e:
-                print(f"  ❌ {field} 写入失败: {e}")
+                skipped += 1
+                print(f'  ⚠️ {field} 隔离失败: {e}')
 
         conn.commit()
-        print(f"\n💾 共覆写 {count} 个指标！")
-        print(f"   拦截异常 {anomalies} 个 | 本地实时源优先跳过 {skipped_realtime} 个")
+        q_total = conn.execute('SELECT COUNT(*) FROM quarantine').fetchone()[0]
+
+        # 明确断言：本次运行没有向 observations / observations_v2 写入任何飞书数据
+        obs_cnt = conn.execute(
+            "SELECT COUNT(*) FROM observations WHERE source=? AND timestamp LIKE ?",
+            ('feishu_override', feishu_date + '%')).fetchone()[0]
+
+        print(f'🔒 飞书快照日期 {feishu_date}：隔离 {moved} 个指标（跳过 {skipped}）')
+        print(f'    quarantine 累计 {q_total} 行')
+        print(f'    observations 中该日 feishu_override 行数 = {obs_cnt}（本次未新增任何一行）')
+        print('    ✅ 写库能力已退役：官方数值请取 FRED / NYFed / Treasury')
+        return 0
     finally:
         conn.close()
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

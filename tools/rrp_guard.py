@@ -13,7 +13,7 @@ RRP 双源对齐 + 分歧熔断 + 下游门控（最终洁净版）
 from __future__ import annotations
 
 import argparse
-import sqlite3
+import os
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -23,11 +23,20 @@ from typing import Optional
 
 import pandas as pd
 
+from core import data_proxy
+from core.errors import DataError
+
 
 # ============================================================
 # 配置
 # ============================================================
-DEFAULT_DB_PATH = r"D:\HGZC\data\macro.db"
+# 阶段 3 第三步：**生产库绝对路径已删除**。
+# 旧值 r"D:\HGZC\data\macro.db" 让沙盒里跑这个工具时默认去读生产库
+# （读污染 + 审计行号漂移）。现在一律：环境变量 -> 本仓库 data/macro.db。
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_DB_PATH = os.environ.get('GMRE_DB_PATH',
+                                 os.path.join(BASE_DIR, 'data', 'macro.db'))
+RRP_LOAD_LIMIT = 4000    # 观测日数上限（旧实现全量读，这里给足历史覆盖）
 DEFAULT_FRED_SERIES = "RRP_BALANCE"
 DEFAULT_NYFED_SERIES = "RRP_NYFED"
 
@@ -93,20 +102,27 @@ class RRPGuardResult:
 # ============================================================
 # 数据库加载
 # ============================================================
-def _load_series_from_db(conn: sqlite3.Connection, series_name: str) -> pd.DataFrame:
+def _load_series_from_db(conn, series_name: str) -> pd.DataFrame:
+    """取数走 core.data_proxy（阶段 3 第三步接管）。
+
+    旧实现是裸 `SELECT timestamp, value FROM observations ORDER BY timestamp`，
+    直接读 legacy 表、不做量纲校验、不做别名归一——`RRPONTSYD` 那 19 行百万级脏值
+    会原样返回，双源分歧因此永远算错。
+    `strict_fresh=False`：本工具自己有 `_determine_status(stale_days=...)` 的陈旧判定，
+    不在代理层重复阻断（避免"同一件事两处判"）。
+    """
     try:
-        df = pd.read_sql_query(
-            "SELECT timestamp AS ts, value FROM observations "
-            "WHERE series_id = ? ORDER BY timestamp",
-            conn, params=(series_name,),
-        )
-    except Exception:
+        s = data_proxy.load(conn, series_name, RRP_LOAD_LIMIT,
+                            as_index='str', strict_fresh=False, verbose=False)
+    except DataError as e:
+        print(f'  ⚠️ [rrp_guard] {series_name} 取数被代理层拒绝：{e}')
+        return pd.DataFrame(columns=["date", "value"])
+    if s is None or s.empty:
         return pd.DataFrame(columns=["date", "value"])
 
-    if df.empty:
-        return pd.DataFrame(columns=["date", "value"])
-
-    df["date"] = pd.to_datetime(df["ts"], errors="coerce").dt.date
+    df = s.reset_index()
+    df.columns = ["date", "value"]
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
     df = df.dropna(subset=["date", "value"])
     df = df.drop_duplicates(subset=["date"], keep="last")
     return df[["date", "value"]].reset_index(drop=True)
@@ -178,7 +194,8 @@ def run_rrp_guard(
     nyfed_df = pd.DataFrame(columns=["date", "value"])
 
     if Path(db_path).exists():
-        with sqlite3.connect(db_path) as conn:
+        # 阶段 3 第三步：sqlite3.connect 已从本模块彻底移除，连接由代理层提供（只读）
+        with data_proxy.connect_ro(db_path) as conn:
             fred_df = _load_series_from_db(conn, fred_series)
             nyfed_df = _load_series_from_db(conn, nyfed_series)
 

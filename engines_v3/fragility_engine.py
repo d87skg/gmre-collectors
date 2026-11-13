@@ -7,22 +7,17 @@ import numpy as np
 import json
 from datetime import datetime
 
-DB_PATH = 'data/macro.db'
+import os
+DB_PATH = os.environ.get('GMRE_DB_PATH', 'data/macro.db')
+
+from core import data_proxy   # 唯一取数入口（阶段 3 第三步接管）
 
 def _load(conn, sid, limit=120):
-    for col in ['timestamp', 'date']:
-        try:
-            df = pd.read_sql_query(
-                f"SELECT {col} AS dt, value FROM observations WHERE series_id=? ORDER BY {col} DESC LIMIT ?",
-                conn, params=(sid, limit)
-            )
-            if not df.empty:
-                df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
-                df = df.dropna(subset=['dt']).drop_duplicates(subset=['dt'], keep='first')
-                return df.sort_values('dt').set_index('dt')['value'].astype(float)
-        except Exception:
-            continue
-    return pd.Series(dtype=float)
+    """取数下沉到 core.data_proxy，签名与返回结构不变（datetime index 的 Series）。
+
+    旧实现与 defense_v4 同构：裸 SQL 读 legacy、按行限量、同日多版本随机取值。
+    """
+    return data_proxy.load_for_engine(conn, sid, limit, as_index='datetime')
 
 def _get_pct(conn, sid):
     """从 series_percentile 获取 5 年历史分位"""
