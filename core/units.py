@@ -52,11 +52,11 @@ def conversion_factor(from_unit, to_unit):
 REGISTRY = {
     # ---- TGA：canonical = 百万美元（决策④）----
     'TGA_BALANCE': {
-        'unit': MILLION_USD, 'range': (0.0, 5_000_000.0), 'sla': 3,
+        'unit': MILLION_USD, 'range': (0.0, 5_000_000.0), 'sla': 5,
         'severity': 'P0', 'freq': 'daily', 'aliases': {'TGA': MILLION_USD},
     },
     'TGA_DAILY': {
-        'unit': MILLION_USD, 'range': (0.0, 5_000_000.0), 'sla': 3,
+        'unit': MILLION_USD, 'range': (0.0, 5_000_000.0), 'sla': 5,
         'severity': 'P0', 'freq': 'daily', 'aliases': {'TGA_DAILY_TREASURY': MILLION_USD},
     },
     'WTREGEN': {

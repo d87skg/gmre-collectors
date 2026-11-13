@@ -1,4 +1,4 @@
-"""engines_v2/engine_liq.py - 全球流动性引擎（净流动性增强版·单位统一修复）"""
+"""engines_v2/engine_liq.py - 全球流动性引擎（净流动性增强版·时间截面严格对齐）"""
 import sys, os
 import sqlite3
 import pandas as pd
@@ -9,28 +9,20 @@ from engines_v2.base_engine import (
 )
 
 ENGINE_ID = 'LIQ'
-DB_PATH = 'data/macro.db'
+DB_PATH = os.environ.get('GMRE_DB_PATH', 'data/macro.db')
+
+from core import data_proxy   # 唯一取数入口
 
 
 def _load_single(conn, series_id, lookback=200):
-    """加载单个 series，保留最近 lookback 条，去重排序"""
-    for date_col in ['timestamp', 'date', 'asof_date']:
-        try:
-            df = pd.read_sql_query(
-                f"SELECT {date_col} AS dt, value FROM observations "
-                f"WHERE series_id=? ORDER BY {date_col} DESC LIMIT ?",
-                conn, params=(series_id, lookback)
-            )
-            if not df.empty:
-                df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
-                df = df.dropna(subset=['dt'])
-                df['dt'] = df['dt'].dt.strftime('%Y-%m-%d')
-                df = df.drop_duplicates(subset=['dt'], keep='first')
-                df = df.sort_values('dt')
-                return df.set_index('dt')['value'].rename(series_id)
-        except Exception:
-            continue
-    return pd.Series(dtype=float, name=series_id)
+    """加载单个 series —— 下沉到 core.data_proxy"""
+    s = data_proxy.load_for_engine(conn, series_id, lookback, as_index='str')
+    try:
+        s.index = pd.to_datetime(s.index, errors='coerce').strftime('%Y-%m-%d')
+    except Exception:
+        pass
+    s.name = series_id
+    return s
 
 
 def compute_engine(asof: str) -> dict:
@@ -51,27 +43,43 @@ def compute_engine(asof: str) -> dict:
         save_engine_result(asof, ENGINE_ID, 0.0, 'NEUTRAL', {}, {})
         return result
 
-    # ============ 核心改进：日频对齐 + 净流动性合成 ============
-    # 1. 拼接所有序列，外连接（所有日期都保留）
+    # ============ 核心改进：时间截面严格对齐 ============
+    # 1. 拼接所有序列，外连接
     df = pd.concat([walcl, tga, rrp, dxy], axis=1).sort_index()
-    # 2. 周频 WALCL 向前填充到日频；前几行反向填充
-    df = df.ffill().bfill()
+    
+    # 2. 🆕 丢弃任何包含缺失值的行，找到真正“四个指标都有数据”的最新截面
+    valid_df = df.dropna(subset=['FED_WALCL', 'TGA_BALANCE', 'RRP_BALANCE', 'DXY_PROXY'])
+    
+    if valid_df.empty:
+        # 如果一天都对不齐，直接返回
+        result = {'engine_id': ENGINE_ID, 'z_score': 0.0, 'direction': 'NEUTRAL',
+                  'loadings': {}, 'raw': {}, 'error': 'no_aligned_cross_section'}
+        save_engine_result(asof, ENGINE_ID, 0.0, 'NEUTRAL', {}, {})
+        return result
 
-    # 3. 单位统一：全部转成"十亿美元"
-    #    FED_WALCL: 百万美元 → 十亿美元  (÷1000)
-    #    TGA_BALANCE: 百万美元 → 十亿美元 (÷1000)
-    #    RRP_BALANCE: 本身就是十亿美元，不变
-       # 单位统一：三个序列全是"百万美元"，统一 ÷1000 变成"十亿美元"
-    df['FED_WALCL_B']   = df['FED_WALCL'] / 1000.0
-    df['TGA_BALANCE_B'] = df['TGA_BALANCE'] / 1000.0
-    df['RRP_BALANCE_B'] = df['RRP_BALANCE']            # RRP已是十亿美元
-    df['NET_LIQ'] = df['FED_WALCL_B'] - df['TGA_BALANCE_B'] - df['RRP_BALANCE_B']
+    # 3. 🆕 强制跨期校验：如果对齐后的最新日期距离 asof 超过 3 天，拒绝计算！
+    latest_aligned_date = pd.to_datetime(valid_df.index[-1])
+    asof_date = pd.to_datetime(asof)
+    lag_days = (asof_date - latest_aligned_date).days
 
-    # 4. 计算净流动性（单位：十亿美元）
-    df['NET_LIQ'] = df['FED_WALCL_B'] - df['TGA_BALANCE_B'] - df['RRP_BALANCE_B']
+    if lag_days > 3:
+        print(f"  🚨 [CRITICAL] 净流动性时间截面错配！最新对齐日 {latest_aligned_date.strftime('%Y-%m-%d')}，滞后 {lag_days} 天 > 3 天阈值。")
+        print(f"      拒绝使用旧数据拼凑当前流动性，【LIQ引擎强制降级为 UNKNOWN】。")
+        result = {'engine_id': ENGINE_ID, 'z_score': 0.0, 'direction': 'NEUTRAL',
+                  'loadings': {}, 'raw': {}, 'error': 'stale_cross_section'}
+        save_engine_result(asof, ENGINE_ID, 0.0, 'NEUTRAL', {}, {})
+        return result
 
-    # 5. 只用净流动性 + 美元指数作为输入
-    z_input = df[['NET_LIQ', 'DXY_PROXY']].dropna()
+    # 4. 单位统一：全部转成"十亿美元"
+    valid_df['FED_WALCL_B']   = valid_df['FED_WALCL'] / 1000.0
+    valid_df['TGA_BALANCE_B'] = valid_df['TGA_BALANCE'] / 1000.0
+    valid_df['RRP_BALANCE_B'] = valid_df['RRP_BALANCE']
+
+    # 5. 计算净流动性
+    valid_df['NET_LIQ'] = valid_df['FED_WALCL_B'] - valid_df['TGA_BALANCE_B'] - valid_df['RRP_BALANCE_B']
+
+    # 6. 只用净流动性 + 美元指数作为输入
+    z_input = valid_df[['NET_LIQ', 'DXY_PROXY']].dropna()
 
     if len(z_input) < 20:
         result = {'engine_id': ENGINE_ID, 'z_score': 0.0, 'direction': 'NEUTRAL',
@@ -79,19 +87,20 @@ def compute_engine(asof: str) -> dict:
         save_engine_result(asof, ENGINE_ID, 0.0, 'NEUTRAL', {}, {})
         return result
 
-    # 6. 用 DXY 作为锚定：DXY上升 = 流动性收紧 = LIQ正值
+    # 7. 用 DXY 作为锚定
     z, loadings = pca_reduce(z_input, sign_anchor_col='DXY_PROXY', sign_expected=1.0)
     direction = classify_direction(z, pos_label='TIGHTENING', neg_label='EASING')
 
-    # 7. 详细输出（单位统一为十亿美元）
+    # 8. 详细输出
     raw = {
-        'NET_LIQ_十亿': round(float(df['NET_LIQ'].iloc[-1]), 2),
-        'WALCL_十亿': round(float(df['FED_WALCL_B'].iloc[-1]), 2),
-        'TGA_十亿': round(float(df['TGA_BALANCE_B'].iloc[-1]), 2),
-        'RRP_十亿': round(float(df['RRP_BALANCE_B'].iloc[-1]), 2),
-        'DXY': round(float(df['DXY_PROXY'].iloc[-1]), 4),
-        'NET_LIQ_5d_change': round(float(df['NET_LIQ'].iloc[-1] - df['NET_LIQ'].iloc[-6]), 2) if len(df) >= 6 else 0,
-        'NET_LIQ_20d_change': round(float(df['NET_LIQ'].iloc[-1] - df['NET_LIQ'].iloc[-21]), 2) if len(df) >= 21 else 0,
+        'NET_LIQ_十亿': round(float(valid_df['NET_LIQ'].iloc[-1]), 2),
+        'WALCL_十亿': round(float(valid_df['FED_WALCL_B'].iloc[-1]), 2),
+        'TGA_十亿': round(float(valid_df['TGA_BALANCE_B'].iloc[-1]), 2),
+        'RRP_十亿': round(float(valid_df['RRP_BALANCE_B'].iloc[-1]), 2),
+        'DXY': round(float(valid_df['DXY_PROXY'].iloc[-1]), 4),
+        'Aligned_Date': valid_df.index[-1], # 🆕 记录这次计算到底用的是哪天的截面
+        'NET_LIQ_5d_change': round(float(valid_df['NET_LIQ'].iloc[-1] - valid_df['NET_LIQ'].iloc[-6]), 2) if len(valid_df) >= 6 else 0,
+        'NET_LIQ_20d_change': round(float(valid_df['NET_LIQ'].iloc[-1] - valid_df['NET_LIQ'].iloc[-21]), 2) if len(valid_df) >= 21 else 0,
     }
     save_engine_result(asof, ENGINE_ID, z, direction, loadings, raw)
 

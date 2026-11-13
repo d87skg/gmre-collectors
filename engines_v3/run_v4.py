@@ -25,7 +25,6 @@ def get_git_commit():
     except Exception: return "UNKNOWN"
 
 def get_series_meta(sid, override_value=None):
-    import warnings
     try:
         conn = sqlite3.connect(DB_PATH)
         try:
@@ -384,7 +383,32 @@ def main():
 
     print(f"\n┌{'─'*58}┐\n│  🚦 [Event Scenario] 事件情景推演与权限拦截        │\n└{'─'*58}┘")
     try:
-        mock_cpi = 4.0
+       # 🆕 动态获取真实的通胀数据
+        mock_cpi = 4.0 # 作为最终兜底值
+        try:
+            conn_cpi = sqlite3.connect(DB_PATH)
+            try:
+                # 优先尝试 CPI_CORE，缺失则捕获异常不中断
+                try:
+                    cpi_series = load(conn_cpi, 'CPI_CORE', limit=1, verbose=False, strict_fresh=False)
+                except DataError:
+                    cpi_series = pd.Series(dtype=float)
+                
+                # 如果 CPI_CORE 缺失，降级尝试密歇根通胀预期
+                if cpi_series.empty:
+                    try:
+                        cpi_series = load(conn_cpi, 'MICH_1Y_EXPECT', limit=1, verbose=False, strict_fresh=False)
+                    except DataError:
+                        cpi_series = pd.Series(dtype=float)
+                
+                if not cpi_series.empty:
+                    mock_cpi = float(cpi_series.iloc[-1])
+                    print(f"  🔗 [Event Input] 当前采用的真实通胀/预期数据: {mock_cpi:.2f}%")
+            finally:
+                conn_cpi.close()
+        except Exception as e:
+            print(f"  ⚠️ 获取真实通胀数据失败，降级使用兜底值 4.0: {e}")
+
         sofr, effr = get_series_meta('SOFR')[1] or 0, get_series_meta('EFFR')[1] or 0
         sofr_effr = (sofr - effr) * 100
         hy_now = get_series_meta('HY_SPREAD')[1] or 0
