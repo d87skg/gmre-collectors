@@ -40,8 +40,10 @@ jobs:
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
           GMRE_PROXY_BASE: ${{ secrets.GMRE_PROXY_BASE }}
         run: |
-          python tools/sync_feishu_snapshot.py || echo "Sync failed"
-          python tools/apply_feishu_override.py || echo "Override failed"
+          # 🚨 [DISABLED] 彻底废除飞书文本反解析
+          # python tools/sync_feishu_snapshot.py || echo "Sync failed"
+          # python tools/apply_feishu_override.py || echo "Override failed"
+          
           python tools/compute_percentile.py || echo "Percentile failed"
           python tools/sync_commodity_github.py || echo "Commodity failed"
           python engines_v3/spread_engine.py || echo "Spread failed"
