@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""collectors/extra_macro.py - 全量扩展（v4.1 适配 obs_ts + 增加TLT/WTI）"""
+"""collectors/extra_macro.py - 全量扩展（v4.1 适配 obs_ts + 增加ETF代理）"""
 import sys
 import requests
 import pandas as pd
@@ -17,7 +17,6 @@ def save_to_db(rows):
     for row in rows:
         obs_ts = row['date']
         obs_date = obs_ts[:10]
-        # 🆕 使用 INSERT OR REPLACE，新表有 UNIQUE 约束，如果当天重复会自动处理
         conn.execute(
             "INSERT OR REPLACE INTO observations (series_id, obs_ts, obs_date, value, source, ingest_at) "
             "VALUES (?, ?, ?, ?, ?, datetime('now'))",
@@ -48,7 +47,7 @@ def fetch_yahoo(symbol, series_id):
     params = {"interval": "1d", "range": "5y"} 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=5) # 🆕 极速超时
+        r = requests.get(url, params=params, headers=headers, timeout=5)
         if r.status_code == 200:
             data = r.json()
             result = data.get('chart', {}).get('result', [])
@@ -62,7 +61,22 @@ def fetch_yahoo(symbol, series_id):
                         rows.append({'series_id': series_id, 'date': d, 'value': float(c), 'source': 'yahoo_extra'})
                 return rows
     except Exception as e:
-        print(f"  ❌ {symbol} 抓取失败: {str(e)[:40]}")
+        pass # 静默失败，转入备用
+    
+    # 🆕 备用源：腾讯实时快照（仅补最新一天）
+    from collectors.fallback_collectors import fetch_tencent_realtime
+    fallback_map = {
+        'SPY_PRICE': 'usSPY', 'GLD_PRICE': 'usGLD', 'TLT_PRICE': 'usTLT',
+        'SHY_PRICE': 'usSHY', 'USD_CNH': 'fx_susdcnh', 'WTI_OIL': 'hf_CL',
+        'IBIT_PRICE': 'usIBIT', 'FBTC_PRICE': 'usFBTC',
+    }
+    if series_id in fallback_map:
+        symbol_qq = fallback_map[series_id]
+        print(f"  🔄 [FALLBACK] {series_id} Yahoo失败，尝试腾讯: {symbol_qq}")
+        res = fetch_tencent_realtime(symbol_qq)
+        if res:
+            return [{'series_id': series_id, 'date': res['date'], 'value': res['value'], 'source': 'tencent_fallback'}]
+    
     return []
 
 def fetch_sina_futures(symbol, series_id):
@@ -113,14 +127,14 @@ def main():
         print(f"  ✅ SHY: {shy_rows[-1]['value']:.2f}")
         all_rows.extend(shy_rows)
 
-    # 🆕 4. 长债 ETF (TLT)
+    # 4. 长债 ETF (TLT)
     print("🔄 正在抓取 长债 ETF (TLT)...")
     tlt_rows = fetch_yahoo('TLT', 'TLT_PRICE')
     if tlt_rows:
         print(f"  ✅ TLT: {tlt_rows[-1]['value']:.2f}")
         all_rows.extend(tlt_rows)
 
-    # 🆕 5. 原油 WTI
+    # 5. 原油 WTI
     print("🔄 正在抓取 原油 WTI (CL=F)...")
     wti_rows = fetch_yahoo('CL=F', 'WTI_OIL')
     if wti_rows:
@@ -141,7 +155,19 @@ def main():
         print(f"  ✅ VIX3M: {vix3m_rows[-1]['value']:.2f}")
         all_rows.extend(vix3m_rows)
 
-    # 8. 黑色系
+    # 🆕 8. 比特币现货 ETF 代理指标 (IBIT / FBTC)
+    print("🔄 正在抓取 比特币现货 ETF (IBIT / FBTC)...")
+    ibit_rows = fetch_yahoo('IBIT', 'IBIT_PRICE')
+    if ibit_rows:
+        all_rows.extend(ibit_rows)
+        print(f"  ✅ IBIT: {ibit_rows[-1]['value']:.2f}")
+        
+    fbtc_rows = fetch_yahoo('FBTC', 'FBTC_PRICE')
+    if fbtc_rows:
+        all_rows.extend(fbtc_rows)
+        print(f"  ✅ FBTC: {fbtc_rows[-1]['value']:.2f}")
+
+    # 9. 黑色系
     print("🔄 正在抓取 螺纹钢/铁矿石...")
     rb = fetch_sina_futures('RB0', 'REBAR')
     if rb:

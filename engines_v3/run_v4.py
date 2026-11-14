@@ -32,7 +32,6 @@ def get_series_meta(sid, override_value=None):
             from core.errors import DataError
             
             try:
-                # 🆕 代理层返回的是 Series，索引是日期，值直接是数据
                 series = load(conn, sid, limit=1)
                 if not series.empty:
                     date_str = pd.to_datetime(series.index[-1]).strftime('%Y-%m-%d')
@@ -224,6 +223,14 @@ def main():
         if us10y and jp10y: print(f"  [宏观联动] 美日10Y利差: {us10y - jp10y:+.2f}%")
         if us10y and de10y: print(f"  [宏观联动] 美德10Y利差: {us10y - de10y:+.2f}%")
         if us10y_rt is not None: print(f"  [盘中参考] 实时10Y Tradeweb = {us10y_rt:.3f}%")
+        
+        # 🆕 用 2Y 美债与联邦基金利率的差值，作为 FedWatch 的替代
+        us2y = get_series_meta('YC2Y')[1]
+        fedfunds = get_series_meta('FEDFUNDS')[1]
+        if us2y and fedfunds:
+            diff_bp = (us2y - fedfunds) * 100
+            direction = "加息预期" if diff_bp > 0 else "降息预期"
+            print(f"  [FedWatch替代] 2Y美债({us2y:.2f}%) - 联邦基金({fedfunds:.2f}%) = {diff_bp:+.1f}bp ({direction})")
     except Exception: pass
     print(f"{'─'*50}")
 
@@ -382,19 +389,15 @@ def main():
 
     print(f"\n┌{'─'*58}┐\n│  🚦 [Event Scenario] 事件情景推演与权限拦截        │\n└{'─'*58}┘")
     try:
-        # 🆕 动态获取真实的通胀数据（强制只使用同比/预期百分比）
         mock_cpi = 4.0 
         try:
             conn_cpi = sqlite3.connect(DB_PATH)
             try:
-                # 优先尝试获取 MICH_1Y_EXPECT，因为它是明确的正向百分比
                 cpi_series = load(conn_cpi, 'MICH_1Y_EXPECT', limit=1, verbose=False, strict_fresh=False)
-                
                 if not cpi_series.empty:
                     mock_cpi = float(cpi_series.iloc[-1])
                     print(f"  🔗 [Event Input] 当前采用的通胀预期(MICH_1Y): {mock_cpi:.2f}%")
                 else:
-                    # 如果 MICH 缺失，尝试用 CPI 算同比（这里只是兜底，但尽量用 MICH）
                     cpi_all = load(conn_cpi, 'CPI', limit=13, verbose=False, strict_fresh=False)
                     if len(cpi_all) >= 13:
                         yoy = (float(cpi_all.iloc[-1]) / float(cpi_all.iloc[-13]) - 1) * 100
