@@ -382,25 +382,26 @@ def main():
 
     print(f"\n┌{'─'*58}┐\n│  🚦 [Event Scenario] 事件情景推演与权限拦截        │\n└{'─'*58}┘")
     try:
-        # 🆕 动态获取真实的通胀数据
+        # 🆕 动态获取真实的通胀数据（强制只使用同比/预期百分比）
         mock_cpi = 4.0 
         try:
             conn_cpi = sqlite3.connect(DB_PATH)
             try:
-                try:
-                    cpi_series = load(conn_cpi, 'CPI_CORE', limit=1, verbose=False, strict_fresh=False)
-                except DataError:
-                    cpi_series = pd.Series(dtype=float)
-                
-                if cpi_series.empty:
-                    try:
-                        cpi_series = load(conn_cpi, 'MICH_1Y_EXPECT', limit=1, verbose=False, strict_fresh=False)
-                    except DataError:
-                        cpi_series = pd.Series(dtype=float)
+                # 优先尝试获取 MICH_1Y_EXPECT，因为它是明确的正向百分比
+                cpi_series = load(conn_cpi, 'MICH_1Y_EXPECT', limit=1, verbose=False, strict_fresh=False)
                 
                 if not cpi_series.empty:
                     mock_cpi = float(cpi_series.iloc[-1])
-                    print(f"  🔗 [Event Input] 当前采用的真实通胀/预期数据: {mock_cpi:.2f}%")
+                    print(f"  🔗 [Event Input] 当前采用的通胀预期(MICH_1Y): {mock_cpi:.2f}%")
+                else:
+                    # 如果 MICH 缺失，尝试用 CPI 算同比（这里只是兜底，但尽量用 MICH）
+                    cpi_all = load(conn_cpi, 'CPI', limit=13, verbose=False, strict_fresh=False)
+                    if len(cpi_all) >= 13:
+                        yoy = (float(cpi_all.iloc[-1]) / float(cpi_all.iloc[-13]) - 1) * 100
+                        mock_cpi = yoy
+                        print(f"  🔗 [Event Input] 当前采用的真实 CPI 同比: {mock_cpi:.2f}%")
+                    else:
+                        print(f"  ⚠️ 无法计算 CPI 同比（数据不足 13 个月），使用兜底值 4.0%")
             finally:
                 conn_cpi.close()
         except Exception as e:

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""engines_v3/risk_budget_engine.py - 影子风险预算与动量过滤引擎 (v3.2: 短债SHY适配)"""
+"""engines_v3/risk_budget_engine.py - 影子风险预算与动量过滤引擎 (v4.1: 6资产版)"""
 import sqlite3
 import numpy as np
 import pandas as pd
@@ -7,21 +7,24 @@ from sklearn.covariance import LedoitWolf
 
 DB_PATH = 'data/macro.db'
 
-# 🆕 资产替换：用 SHY 替代 US10Y
+# 🆕 资产池扩展：增加 TLT(长债) 和 WTI(原油)
 ASSETS = {
     'SP500': 'SP500',
     'GOLD': 'GOLD_PRICE',
     'BTC': 'BTC_SPOT_PRICE_1H',
-    'SHY': 'SHY_PRICE'
+    'SHY': 'SHY_PRICE',
+    'TLT': 'TLT_PRICE',
+    'WTI': 'WTI_OIL'
 }
 
 def get_pit_series(series_id, limit=252):
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    # 🆕 使用 obs_ts 兼容新表结构
     query = """
-        SELECT timestamp, value 
+        SELECT obs_ts AS timestamp, value 
         FROM observations 
         WHERE series_id = ? AND value IS NOT NULL
-        ORDER BY timestamp ASC LIMIT ?
+        ORDER BY obs_ts ASC LIMIT ?
     """
     try:
         df = pd.read_sql_query(query, conn, params=(series_id, limit * 2))
@@ -77,7 +80,8 @@ def momentum_multiplier(series, asset_class):
         "STRONG": 1.00, "NEUTRAL": 0.85, "WEAK": 0.50, "EXTREME_WEAK": 0.20
     }
     mult = multipliers[state]
-    if state == "EXTREME_WEAK" and asset_class in ("BTC", "SP500"):
+    # 🆕 在极端弱势下，清零高波动资产，但黄金和美债作为避险不轻易清零
+    if state == "EXTREME_WEAK" and asset_class in ("BTC", "SP500", "WTI"):
         mult = 0.0
             
     return mult, state
@@ -91,13 +95,12 @@ def compute_shadow_weights(gate_state):
         if not s.empty:
             prices[name] = s
             
-    if len(prices) < 3:
-        print("  ❌ 有效资产不足，影子计算终止。")
+    if len(prices) < 4:
+        print(f"  ❌ 有效资产不足 ({len(prices)}/6)，影子计算终止。")
         return None
         
     df_prices = pd.DataFrame(prices).ffill().dropna()
     
-    # 🆕 由于 SHY 是 ETF 价格，统一用 pct_change 计算收益率
     returns = df_prices.pct_change().dropna()
     
     cov, cov_status = estimate_covariance(returns)
@@ -123,7 +126,7 @@ def compute_shadow_weights(gate_state):
     for asset in base_weights.index:
         w_base = base_weights[asset]
         
-        if gate_state == "RED" and asset in ("BTC", "SP500"):
+        if gate_state == "RED" and asset in ("BTC", "SP500", "WTI"):
             final_weights[asset] = 0.0
             print(f"  {asset:<8} | {w_base*100:>8.2f}% | {'RED禁止':<12} | 0.00   |   0.00%")
             continue
@@ -150,4 +153,4 @@ def compute_shadow_weights(gate_state):
     return final_weights
 
 if __name__ == "__main__":
-    compute_shadow_weights("RED")
+    compute_shadow_weights("ORANGE")
