@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""collectors/enhanced_data.py - 补全流动性/风险核心序列（修复单位与静默报错）"""
+"""collectors/enhanced_data.py - 补全流动性/风险核心序列（真·增量 + 极速失败版）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -9,11 +9,23 @@ import io
 import re
 import sqlite3
 import pandas as pd
+from datetime import datetime, timedelta
 
 from core.database import Database
 
 DB_PATH = os.environ.get('GMRE_DB_PATH', 'data/macro.db')
 PROXIES = None
+
+def get_latest_obs_date(series_id):
+    """从本地库查询某个序列的最新观测日"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute("SELECT MAX(obs_date) FROM observations WHERE series_id=?", (series_id,)).fetchone()
+        conn.close()
+        if row and row[0]:
+            return str(row[0])
+    except Exception: pass
+    return None
 
 def _append(series_id, obs_ts, value, source, unit=None, frequency='daily'):
     db = Database(DB_PATH)
@@ -26,10 +38,9 @@ def _append(series_id, obs_ts, value, source, unit=None, frequency='daily'):
         if hasattr(db, 'conn') and db.conn:
             db.conn.close()
 
-# 🆕 增加了每个序列的单位映射，解决 unit 为 None 导致无法入库的问题
 FRED_SERIES = {
     'WRESBAL':          ('RESERVE_BALANCE', 'million_usd'),
-    'WALCL':            ('FED_WALCL', 'million_usd'),       # 美联储总资产
+    'WALCL':            ('FED_WALCL', 'million_usd'),
     'SOFR':             ('SOFR', '%'),
     'WLCFLPCL':         ('DISCOUNT_WINDOW', 'million_usd'),
     'WLRRAL':           ('REVERSE_REPO_FRED', 'million_usd'),
@@ -42,27 +53,36 @@ FRED_SERIES = {
 }
 
 def fetch_fred_csv(sid, local_id, unit=None):
+    latest_local = get_latest_obs_date(local_id)
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={sid}"
-    print(f"  🔄 正在拉取 {sid:15s} -> {local_id}...", flush=True)
+    print(f"  🔄 正在拉取 {sid:15s} -> {local_id:20s}...", flush=True)
     try:
-        r = requests.get(url, timeout=10, proxies=PROXIES)
+        # 🆕 极速超时：5 秒连不上直接跳过
+        r = requests.get(url, timeout=5, proxies=PROXIES)
         if r.status_code != 200: 
             print(f"    ⚠️ {sid} 请求失败: HTTP {r.status_code}", flush=True)
             return 0
         df = pd.read_csv(io.StringIO(r.text))
         df.columns = ['date', 'value']
         df = df[df['value'] != '.']
+        
+        # 🆕 只保留本地缺失的数据
+        if latest_local:
+            df = df[df['date'] > latest_local]
+            
+        if df.empty:
+            print(f"    ⏭️ {sid} 已是最新 (本地最大日期 {latest_local})", flush=True)
+            return 0
+
         count = 0
         for _, row in df.iterrows():
             try:
                 _append(local_id, str(row['date']), row['value'], 'fred_csv', unit=unit)
                 count += 1
-            except Exception as e:
-                # 现在不再静默跳过，而是把错误打印出来
-                pass
+            except Exception: pass
         return count
     except requests.exceptions.Timeout:
-        print(f"    ⏱️ {sid} 请求超时 (10s)，跳过", flush=True)
+        print(f"    ⏱️ {sid} 请求超时 (5s)，跳过", flush=True)
         return 0
     except Exception as e:
         print(f"    ❌ {sid} 请求异常: {str(e)[:50]}", flush=True)
@@ -88,54 +108,73 @@ def parse_tga_records(records):
     return [(d, v) for d, (v, _r) in sorted(dated.items())]
 
 def fetch_treasury_daily_tga():
-    print("  🔄 正在拉取 财政部 TGA (DTS)...", flush=True)
+    latest_local = get_latest_obs_date('TGA_DAILY')
+    start_date = latest_local if latest_local else '2024-01-01'
+    
+    print(f"  🔄 正在拉取 财政部 TGA (DTS) (since {start_date})...", flush=True)
     url = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/dts/operating_cash_balance"
-    params = {'filter': 'record_date:gte:2024-01-01', 'sort': '-record_date', 'page[size]': 1000}
+    params = {'filter': f'record_date:gte:{start_date}', 'sort': '-record_date', 'page[size]': 1000}
+    
     try:
-        r = requests.get(url, params=params, timeout=10, proxies=PROXIES)
+        r = requests.get(url, params=params, timeout=5, proxies=PROXIES)
         payload = r.json()
     except Exception as e:
         print(f"  ❌ 财政部API失败: {str(e)[:50]}", flush=True)
         return 0
+        
     records = payload.get('data', [])
     parsed = parse_tga_records(records)
     if not parsed:
-        print("  ❌ TGA 零匹配！", flush=True)
+        print("  ⏭️ TGA 无需更新。", flush=True)
         return 0
+        
     count = 0
     for d, v in parsed:
         try:
+            # 过滤掉库里已存在的，且日期大于起始日的
+            if latest_local and d <= latest_local: continue
             _append('TGA_DAILY', d, v, 'treasury_fiscal_data', unit='million_usd')
             count += 1
         except Exception: pass
-    if count == 0:
-        print(f"  ℹ️ TGA_DAILY 无新增（最新 {parsed[-1][0]}），数据库内已存在。")
-    else:
+    
+    if count > 0:
         print(f"  ✅ TGA_DAILY: {count} 行 (最新 {parsed[-1][0]})", flush=True)
+    else:
+        print(f"  ⏭️ TGA_DAILY 无新增。", flush=True)
     return count
 
 def fetch_nyfed_rrp():
-    print("  🔄 正在拉取 纽约联储 RRP...", flush=True)
+    latest_local = get_latest_obs_date('RRP_NYFED')
+    start_date = latest_local if latest_local else '2024-01-01'
+    
+    print(f"  🔄 正在拉取 纽约联储 RRP (since {start_date})...", flush=True)
     url = "https://markets.newyorkfed.org/api/rp/reverserepo/propositions/search.json"
+    
     try:
-        r = requests.get(url, params={'startDate': '2024-01-01'}, timeout=10, proxies=PROXIES)
+        r = requests.get(url, params={'startDate': start_date}, timeout=5, proxies=PROXIES)
         if r.status_code != 200: 
             print(f"    ⚠️ NYFed RRP 失败: HTTP {r.status_code}", flush=True)
             return 0
         data = r.json()
         ops = data.get('repo', {}).get('operations', [])
-        if not ops: return 0
+        if not ops: 
+            print("  ⏭️ RRP 无需更新。", flush=True)
+            return 0
+            
         count = 0
         for op in ops:
             try:
+                d = op['operationDate']
+                if latest_local and d <= latest_local: continue
                 amt_billion = float(op.get('totalAmtAccepted', 0)) / 1_000_000_000
-                _append('RRP_NYFED', op['operationDate'], amt_billion, 'nyfed_official', unit='billion_usd')
+                _append('RRP_NYFED', d, amt_billion, 'nyfed_official', unit='billion_usd')
                 count += 1
             except Exception: pass
-        if count == 0:
-            print(f"  ℹ️ RRP_NYFED 无新增，数据库内已存在。")
-        else:
+            
+        if count > 0:
             print(f"  ✅ RRP_NYFED: {count} 行", flush=True)
+        else:
+            print(f"  ⏭️ RRP_NYFED 无新增。", flush=True)
         return count
     except Exception as e:
         print(f"  ❌ 纽约联储API失败: {str(e)[:50]}", flush=True)

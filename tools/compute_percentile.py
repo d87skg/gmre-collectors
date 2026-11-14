@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""tools/compute_percentile.py - 直接从 observations 计算历史分位 (代理层重构版)"""
+"""tools/compute_percentile.py - 直接从 observations 计算历史分位 (代理层最终修复版)"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -54,7 +54,6 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""CREATE TABLE IF NOT EXISTS series_percentile (series_id TEXT NOT NULL, as_of_date TEXT NOT NULL, value REAL, z_score_1y REAL, z_score_5y REAL, pct_1y REAL, pct_5y REAL, PRIMARY KEY (series_id, as_of_date))""")
 
-    # 直接获取所有有效的 series_id
     try:
         existing = set(r[0] for r in conn.execute("SELECT DISTINCT series_id FROM observations").fetchall())
     except Exception:
@@ -65,21 +64,19 @@ def main():
     
     for sid, mapped in targets:
         try:
-            # 走代理层，关闭 verbose 防止刷屏
-            df = load(conn, sid, limit=100000)
-            if df is None or df.empty: continue
+            # 🆕 走代理层，返回的是 Series（索引是日期，值是数据）
+            s = load(conn, sid, limit=100000)
+            if s is None or s.empty: continue
             
-            df = df.reset_index()
-            date_col = df.columns[0]
-            
-            df['dt'] = pd.to_datetime(df[date_col], format='mixed', errors='coerce')
-            df['dt'] = df['dt'].dt.strftime('%Y-%m-%d')
+            # 🆕 构建标准 DataFrame 用于计算
+            df = pd.DataFrame({'dt': s.index, 'value': s.values})
+            df['dt'] = pd.to_datetime(df['dt'], errors='coerce').dt.strftime('%Y-%m-%d')
             df = df[df['dt'] <= as_of]
             
             df = df.dropna(subset=['dt', 'value'])
             df = df.drop_duplicates(subset=['dt'], keep='first')
             df = df.sort_values('dt').set_index('dt')['value'].astype(float)
-        except Exception:
+        except Exception as e:
             continue
         
         if len(df) < 20: continue

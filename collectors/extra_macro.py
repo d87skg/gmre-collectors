@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""collectors/extra_macro.py - 全量扩展（v3.3：新增 1-3年短债ETF SHY 采集）"""
+"""collectors/extra_macro.py - 全量扩展（v4.1 适配 obs_ts）"""
 import sys
 import requests
 import pandas as pd
@@ -10,16 +10,18 @@ from pathlib import Path
 
 DB_PATH = 'data/macro.db'
 
-
 def save_to_db(rows):
     if not rows:
         return
     conn = sqlite3.connect(DB_PATH)
     for row in rows:
+        # 🆕 将 timestamp 替换为 obs_ts，并补充 obs_date 与 ingest_at
+        obs_ts = row['date']
+        obs_date = obs_ts[:10]  # 截取 YYYY-MM-DD
         conn.execute(
-            "INSERT OR REPLACE INTO observations (series_id, timestamp, value, source, retrieved_at) "
-            "VALUES (?, ?, ?, ?, datetime('now'))",
-            (row['series_id'], row['date'], row['value'], row['source'])
+            "INSERT OR REPLACE INTO observations (series_id, obs_ts, obs_date, value, source, ingest_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now'))",
+            (row['series_id'], obs_ts, obs_date, row['value'], row['source'])
         )
     conn.commit()
     conn.close()
@@ -30,11 +32,12 @@ def save_realtime_us10y(value: float, quote_time_bj: str, source='Tradeweb'):
     """实时10Y美债入库：只做盘中参考，不覆盖日频 YC10Y。"""
     try:
         conn = sqlite3.connect(DB_PATH)
+        obs_date = quote_time_bj[:10]
         conn.execute(
             "INSERT OR REPLACE INTO observations "
-            "(series_id, timestamp, value, source, retrieved_at) "
-            "VALUES (?, ?, ?, ?, datetime('now'))",
-            ('US10Y_RT_TRADEWEB', quote_time_bj, float(value), source)
+            "(series_id, obs_ts, obs_date, value, source, ingest_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now'))",
+            ('US10Y_RT_TRADEWEB', quote_time_bj, obs_date, float(value), source)
         )
         conn.commit()
         conn.close()
@@ -89,7 +92,7 @@ def main():
     print(f"\n{'='*60}\n  扩展宏观数据采集\n{'='*60}\n")
     all_rows = []
 
-    # 1. 市场广度 (算 20日动量差：RSP收益率 - SPY收益率)
+    # 1. 市场广度
     print("🔄 正在抓取 市场广度 (SPY / RSP)...")
     spy_rows = fetch_yahoo('SPY', 'SPY_PRICE')
     rsp_rows = fetch_yahoo('RSP', 'RSP_PRICE')
@@ -108,21 +111,21 @@ def main():
             })
             print(f"  ✅ 市场广度 20D 动量: {breadth_momentum:+.2f}%")
 
-    # 2. 黄金 ETF (GLD)
+    # 2. 黄金 ETF
     print("🔄 正在抓取 黄金 ETF (GLD)...")
     gld_rows = fetch_yahoo('GLD', 'GLD_PRICE')
     if gld_rows:
         print(f"  ✅ GLD: {gld_rows[-1]['value']:.2f}")
         all_rows.extend(gld_rows)
         
-    # 🆕 3. 1-3年短债 ETF (SHY)
+    # 3. 1-3年短债 ETF
     print("🔄 正在抓取 1-3年短债 ETF (SHY)...")
     shy_rows = fetch_yahoo('SHY', 'SHY_PRICE')
     if shy_rows:
         print(f"  ✅ SHY: {shy_rows[-1]['value']:.2f}")
         all_rows.extend(shy_rows)
 
-    # 4. 离岸人民币 (USD/CNH)
+    # 4. 离岸人民币
     print("🔄 正在抓取 离岸人民币 (USD/CNH)...")
     cnh_rows = fetch_yahoo('CNH=X', 'USD_CNH')
     if cnh_rows:
