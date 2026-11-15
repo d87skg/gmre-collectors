@@ -1,15 +1,11 @@
-"""engines_v3/engine_mon_v2.py - MON升级版（含Policy Repricing）+ NaN 防弹"""
-import requests
+"""engines_v3/engine_mon_v2.py - MON升级版（含Policy Repricing）+ 严格数据新鲜度校验"""
 import sqlite3
-import io
 import pandas as pd
 import numpy as np
 import json
 from datetime import datetime
 
 DB_PATH = 'data/macro.db'
-PROXIES = None
-
 
 def compute_mon_v2(asof: str) -> dict:
     print(f"\n{'='*60}")
@@ -19,7 +15,7 @@ def compute_mon_v2(asof: str) -> dict:
     conn = sqlite3.connect(DB_PATH)
     try:
         def _load(sid, limit=120):
-            for col in ['timestamp', 'date']:
+            for col in ['timestamp', 'date', 'obs_ts']:
                 try:
                     df = pd.read_sql_query(
                         f"SELECT {col} AS dt, value FROM observations "
@@ -30,7 +26,6 @@ def compute_mon_v2(asof: str) -> dict:
                         df['dt'] = pd.to_datetime(df['dt'], errors='coerce')
                         df = df.dropna(subset=['dt']).drop_duplicates(subset=['dt'], keep='first')
                         s = df.sort_values('dt').set_index('dt')['value'].astype(float)
-                        # 🆕 核心修复：前向填充，防止周末断更导致 NaN
                         return s.ffill()
                 except Exception:
                     continue
@@ -42,6 +37,17 @@ def compute_mon_v2(asof: str) -> dict:
         us10y2y = _load('US_10Y_2Y_SPREAD', 60)
     finally:
         conn.close()
+
+    # 🆕 将 FEDFUNDS 的过期容忍度放宽到 45 天（月频）
+    if len(fedfunds) < 1:
+        print("  🚨 [FAIL] FEDFUNDS 数据完全缺失，MON 引擎强制降级。")
+        return {'engine_id': 'MON_V2', 'composite': 0.0, 'direction': 'UNKNOWN', 'components': {}}
+        
+    last_ff_date = pd.to_datetime(fedfunds.index[-1])
+    days_lag = (datetime.now() - last_ff_date).days
+    if days_lag > 45:
+        print(f"  🚨 [FAIL] FEDFUNDS 数据过期 (滞后 {days_lag} 天 > 45d)，MON 引擎强制降级，拒绝输出虚假 Composite。")
+        return {'engine_id': 'MON_V2', 'composite': 0.0, 'direction': 'UNKNOWN', 'components': {}}
 
     # ============ 1. MON_LEVEL（政策利率绝对水平）============
     mon_level = 0.0
@@ -59,11 +65,6 @@ def compute_mon_v2(asof: str) -> dict:
                 mon_level = 0.5
             else:
                 mon_level = 0.0
-        else:
-            ff = 3.75
-            ff_used = ff
-            mon_level = 1.0
-            print(f"  ⚠️ FEDFUNDS数据污染，使用默认值{ff}%")
     print(f"  MON_LEVEL: {mon_level:.3f} (FEDFUNDS={ff_used if ff_used else 'N/A'}%)")
 
     # ============ 2. MON_DIRECTION（政策方向）============
@@ -88,8 +89,6 @@ def compute_mon_v2(asof: str) -> dict:
             v5d = v5d_now - v5d_5d
             v5d_prev = v5d_prev_now - v5d_prev_10d
             repricing_bp = v5d * 100
-            accel = (v5d - v5d_prev) * 100
-
             if abs(repricing_bp) > 20:
                 mon_repricing = np.clip(repricing_bp / 20, -3.0, 3.0)
             else:
@@ -111,36 +110,29 @@ def compute_mon_v2(asof: str) -> dict:
         y2_now = float(yc2y.iloc[-1])
         y2_prev = float(yc2y.iloc[-2])
         if not pd.isna(y2_now) and not pd.isna(y2_prev):
-            y2_chg_1d = (y2_now - y2_prev) * 100  # bp
+            y2_chg_1d = (y2_now - y2_prev) * 100
             if abs(y2_chg_1d) > 10:
                 mon_surprise = np.clip(y2_chg_1d / 10, -2.0, 2.0)
     print(f"  MON_SURPRISE: {mon_surprise:.3f} (1日变化)")
 
     # ============ 综合MON_Composite ============
     mon_composite = (
-        0.40 * mon_level
-        + 0.20 * mon_direction
-        + 0.25 * mon_repricing
-        + 0.10 * mon_persistence
-        + 0.05 * mon_surprise
+        0.40 * mon_level +
+        0.20 * mon_direction +
+        0.25 * mon_repricing +
+        0.10 * mon_persistence +
+        0.05 * mon_surprise
     )
 
-    # 兜底：如果算出 NaN，强制归零
     if pd.isna(mon_composite):
         mon_composite = 0.0
 
-    if mon_composite > 1.5:
-        direction = 'EXTREME_TIGHT'
-    elif mon_composite > 1.0:
-        direction = 'TIGHT'
-    elif mon_composite > 0.5:
-        direction = 'TIGHTENING'
-    elif mon_composite > -0.5:
-        direction = 'NEUTRAL'
-    elif mon_composite > -1.0:
-        direction = 'EASING'
-    else:
-        direction = 'EXTREME_EASING'
+    if mon_composite > 1.5: direction = 'EXTREME_TIGHT'
+    elif mon_composite > 1.0: direction = 'TIGHT'
+    elif mon_composite > 0.5: direction = 'TIGHTENING'
+    elif mon_composite > -0.5: direction = 'NEUTRAL'
+    elif mon_composite > -1.0: direction = 'EASING'
+    else: direction = 'EXTREME_EASING'
 
     result = {
         'engine_id': 'MON_V2',
@@ -155,7 +147,6 @@ def compute_mon_v2(asof: str) -> dict:
         }
     }
 
-    # 落盘
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS engine_mon_v2 (
@@ -175,7 +166,6 @@ def compute_mon_v2(asof: str) -> dict:
     print(f"{'='*60}\n")
 
     return result
-
 
 if __name__ == "__main__":
     asof = datetime.now().strftime('%Y-%m-%d')

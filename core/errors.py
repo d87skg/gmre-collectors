@@ -1,21 +1,17 @@
 # -*- coding: utf-8 -*-
-"""core/errors.py - 数据面异常分级（v4.1 阶段 3 第一步）
+"""core/errors.py - 数据面异常分级（v4.2: 代理标记透传版）
 
 设计目标：**代理层可以抛异常，但绝不允许主程序被卡死**。
-所有数据面异常都带 severity，入口处按三档处置：
+三档处置：
+    P0 BLOCK    -> 阻断出报：打印原因、退出码 4
+    P1 DEGRADE  -> 降级：该指标取不到值，下沉为 UNKNOWN
+    P2 WARN     -> 仅告警：打印告警，数值照常使用
 
-    P0 BLOCK    -> 阻断出报：打印原因、退出码 4，绝不生成 Gate / 晨报
-    P1 DEGRADE  -> 降级：该指标取不到值，下沉为 UNKNOWN，其余流程继续
-    P2 WARN     -> 仅展示：打印告警，数值照常使用，Gate 照常计算
-
-分层原则（对应决策⑤的 SLA）：
-    * P0 = 防线直接依赖、且没有可替代官方源的序列
-           （TGA / SOFR / EFFR / RRP 的 NYFed 官方源）
-    * P1 = 有替代源、或可降级为 UNKNOWN 的序列（FRED 侧 RRPONTSYD、HY、YC* 等）
-    * P2 = 参考性/低频序列（调查类 MICH 等），以及任何未登记的序列
-
-本模块不碰数据库：DB 读取由 `probe` 回调注入。阶段 3 第二步建好
-`core/data_proxy.py` 后，probe 由代理层提供，policy 层保持不变。
+v4.2 新增：
+  - preflight(probe) 的 probe 可返回 series_used，用于标识别名/代理链
+    （如 HY_OAS 通过 HY_SPREAD 代理读取）
+  - ok 列表透出 series_used / proxy_used
+  - print_preflight 显式打印代理条目，避免"前置体检 MISSING、下游 OK"的分裂
 """
 import contextlib
 from datetime import datetime, date
@@ -34,15 +30,12 @@ SEVERITY_LABEL = {
     P2: 'ℹ️ P2 仅展示告警',
 }
 
-# ---------------------------------------------------------------- SLA（决策⑤）
-SLA_DAILY = 3          # 日频 3 天
-SLA_RATES = 2          # SOFR / EFFR / RRP 2 天
-SLA_WEEKLY = 8         # 周频 8 天
-SLA_MONTHLY = 45       # 月频 45 天
+# ---------------------------------------------------------------- SLA
+SLA_DAILY = 3
+SLA_RATES = 2
+SLA_WEEKLY = 8
+SLA_MONTHLY = 45
 
-# 序列 -> (SLA 天数, severity)
-# v4.1 阶段 3 第二步起，这张表**不再手写**：统一由 core/units.py 的 REGISTRY 派生，
-# 避免 SLA/别名/量纲三处各写一份、彼此漂移。
 SERIES_POLICY = {cid: (e['sla'], e['severity']) for cid, e in _units.REGISTRY.items()}
 DEFAULT_POLICY = (_units.DEFAULT_ENTRY['sla'], _units.DEFAULT_ENTRY['severity'])
 
@@ -54,7 +47,7 @@ def policy_for(series_id):
 
 
 def days_between(obs_date, asof=None):
-    """obs_date -> asof 的自然日差。无法解析返回 None。（与 units 同口径）"""
+    """obs_date -> asof 的自然日差。无法解析返回 None。"""
     return _units.days_lag(obs_date, asof)
 
 
@@ -124,11 +117,7 @@ class DataStaleError(DataError):
 
 
 class DataUnitError(DataError):
-    """量纲/值域异常：数值超出该序列 canonical 单位的合理区间。
-
-    典型：RRPONTSYD 历史遗留的百万级脏值（399200 十亿 = 约 40 万亿美元，不可能）。
-    这类异常**永不降级使用**，直接隔离并抛出。
-    """
+    """量纲/值域异常：数值超出该序列 canonical 单位的合理区间。"""
 
     kind = 'UNIT'
     severity = P1
@@ -143,7 +132,7 @@ class DataUnitError(DataError):
 
 
 class DataMissingError(DataError):
-    """序列完全无数据（表内不存在该 series_id）。"""
+    """序列完全无数据（表内不存在该 series_id，且别名链亦无）。"""
 
     kind = 'MISSING'
 
@@ -190,12 +179,7 @@ def format_error(exc, width=64):
 
 
 def handle(exc, out=print):
-    """入口级处置。返回进程退出码。
-
-    P0 -> 打印阻断横幅 + 退出码 4（拒绝出报，不写 daily_summary / predictions_log）
-    P1 -> 打印降级提示 + 退出码 0（调用方已兜底）
-    P2 -> 打印告警    + 退出码 0
-    """
+    """入口级处置。返回进程退出码。"""
     d = triage(exc)
     out('')
     out(format_error(exc))
@@ -214,11 +198,7 @@ def handle(exc, out=print):
 
 @contextlib.contextmanager
 def capture(out=print):
-    """在某个计算段内兜住数据异常。
-
-    P0   -> 继续向上抛，交给入口阻断出报
-    其它 -> 就地吞掉并按 severity 打印，调用方拿到 None 自行兜底
-    """
+    """在某个计算段内兜住数据异常。"""
     try:
         yield
     except DataError as e:
@@ -232,10 +212,18 @@ def capture(out=print):
 def preflight(probe, asof=None, series=None):
     """出报前的数据面体检。
 
-    probe(series_id) -> {'obs_date': 'YYYY-MM-DD', 'source': ..., 'value': ...} | None
+    probe(series_id) -> {
+        'obs_date': 'YYYY-MM-DD',
+        'series_used': 'xxx',        # 可选；别名/代理链实际命中的 series_id
+        'source': '...',             # 可选
+        'value': ...                 # 可选
+    } | None
 
-    返回 {'block': [...], 'degrade': [...], 'warn': [...], 'ok': [...], 'verdict': ...}
-    其中 block 非空时调用方必须拒绝出报。
+    返回 {
+        'asof': ..., 'block': [...], 'degrade': [...], 'warn': [...], 'ok': [...],
+        'verdict': 'BLOCK' | 'DEGRADED' | 'WARN' | 'OK'
+    }
+    ok 列表每条包含 series_used / proxy_used，用于区分"直接命中"与"代理命中"。
     """
     asof = asof or datetime.now().strftime('%Y-%m-%d')
     series = series or list(SERIES_POLICY)
@@ -258,8 +246,15 @@ def preflight(probe, asof=None, series=None):
             bucket = {P0: 'block', P1: 'degrade', P2: 'warn'}[e.severity]
             result[bucket].append(e.to_dict())
         else:
-            result['ok'].append({'series_id': sid, 'obs_date': info['obs_date'],
-                                 'days_lag': lag, 'sla_days': sla})
+            used = info.get('series_used', sid)
+            result['ok'].append({
+                'series_id': sid,
+                'obs_date': info['obs_date'],
+                'days_lag': lag,
+                'sla_days': sla,
+                'series_used': used,
+                'proxy_used': used != sid,
+            })
 
     result['verdict'] = ('BLOCK' if result['block'] else
                          'DEGRADED' if result['degrade'] else
@@ -287,4 +282,9 @@ def print_preflight(result, out=print, width=64):
     for i in result['warn']:
         out(f'│  ℹ️ P2 {i["series_id"]:18s} {_lag_text(i):>8s} > SLA {i["sla_days"]}d'
             f'  -> 仅告警')
+    # 显式列出代理命中，避免体检"看似 MISSING"与下游"读取 OK"的分裂
+    proxies = [i for i in result['ok'] if i.get('proxy_used')]
+    for i in proxies:
+        out(f'│  🔗 {i["series_id"]:18s} 通过代理 {i["series_used"]} 读取'
+            f'  lag={i["days_lag"]}d  -> OK')
     out('└' + '─' * width + '┘')

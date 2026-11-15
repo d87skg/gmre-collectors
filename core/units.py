@@ -60,7 +60,7 @@ REGISTRY = {
         'severity': 'P0', 'freq': 'daily', 'aliases': {'TGA_DAILY_TREASURY': MILLION_USD},
     },
     'WTREGEN': {
-        'unit': MILLION_USD, 'range': (0.0, 5_000_000.0), 'sla': 8,
+        'unit': MILLION_USD, 'range': (0.0, 5_000_000.0), 'sla': 45,
         'severity': 'P1', 'freq': 'weekly', 'aliases': {},
     },
     # ---- RRP：canonical = 十亿美元（决策④）----
@@ -81,6 +81,10 @@ REGISTRY = {
     'EFFR': {
         'unit': PCT, 'range': (-5.0, 30.0), 'sla': 2,
         'severity': 'P0', 'freq': 'daily', 'aliases': {},
+    },
+    'FEDFUNDS': {
+        'unit': PCT, 'range': (-5.0, 30.0), 'sla': 45,
+        'severity': 'P1', 'freq': 'monthly', 'aliases': {},
     },
     # ---- 信用：决策⑥ 唯一 ID = HY_OAS，单位 % ----
     'HY_OAS': {
@@ -108,8 +112,8 @@ REGISTRY = {
     # 🆕 修改后（直接删掉 source_priority 这一行）
     'DXY_PROXY': {'unit': INDEX, 'range': (60.0, 200.0), 'sla': 5,
                   'severity': 'P1', 'freq': 'daily', 'aliases': {}},
-    'BROAD_DOLLAR': {'unit': INDEX, 'range': (60.0, 200.0), 'sla': 8,
-                     'severity': 'P2', 'freq': 'daily', 'aliases': {'DTWEXBGS': INDEX}},
+    'BROAD_DOLLAR': {'unit': INDEX, 'range': (60.0, 200.0), 'sla': 45,
+                     'severity': 'P1', 'freq': 'daily', 'aliases': {'DTWEXBGS': INDEX}},
     # ---- 美联储资产负债表 ----
     'FED_WALCL': {
         'unit': MILLION_USD, 'range': (0.0, 20_000_000.0), 'sla': 8,

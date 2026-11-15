@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-"""tools/send_local_feishu.py - GMRE 4.1 全息推送（代理层适配版）"""
+"""tools/send_local_feishu.py - GMRE 4.1 全息推送（v6.0: 权重从 predictions_log 直读，不再依赖 portfolio_optimizer）"""
 import os, sys, requests, json, hmac, hashlib, base64, time, sqlite3
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from engines_v3.portfolio_optimizer import get_portfolio_advice, get_data_health
 from core.data_proxy import load
 
 load_dotenv(r'D:\HGZC\.env')
@@ -12,9 +11,11 @@ WEBHOOK = os.environ.get('FEISHU_WEBHOOK')
 SECRET = os.environ.get('FEISHU_SECRET')
 DB_PATH = 'data/macro.db'
 
+
 def gen_sign(timestamp, secret):
     string_to_sign = f'{timestamp}\n{secret}'
     return base64.b64encode(hmac.new(string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()).decode('utf-8')
+
 
 def get_latest_data():
     asof = datetime.now().strftime('%Y-%m-%d')
@@ -23,8 +24,8 @@ def get_latest_data():
         'risk_gate': 'UNKNOWN', 'stress_layers': 'NONE',
         'p_high_risk': 0.0, 'p_r4': 0.0, 'p_r5': 0.0,
         'rrp_source': 'N/A', 'caps_al': 'N/A', 'caps_cu': 'N/A', 'cu_spread': 0.0,
-        'lti_score': 0.0, 'lti_level': 'UNKNOWN', 'y10': 0.0, 'us10y_rt': 0.0, 
-        'rrp': 0.0, 'hy_oas': 0.0, 'vix': 0.0, 'bitget_fr': 0.0, 'coinbase_prem': 0.0, 
+        'lti_score': 0.0, 'lti_level': 'UNKNOWN', 'y10': 0.0, 'us10y_rt': 0.0,
+        'rrp': 0.0, 'hy_oas': 0.0, 'vix': 0.0, 'bitget_fr': 0.0, 'coinbase_prem': 0.0,
         'hl_imb': 0.0, 'btc_etf_flow': 0.0, 'fear_greed': 0, 'lti_raw_fr': 0.0, 'lti_raw_imb': 0.0,
         'gold': 'N/A', 'silver': 'N/A', 'oil': 'N/A', 'copper': 'N/A',
         'dxy': 0.0, 'usdjpy': 0.0, 'usdcny': 0.0, 'usdcnh': 0.0, 'spx': 0.0,
@@ -37,6 +38,8 @@ def get_latest_data():
         'micro_status': 'N/A', 'micro_score': 0.0, 'micro_details': {},
         'factor_status': 'N/A', 'factor_msg': 'N/A', 'lti_details': {},
         'event_perm': 'N/A', 'event_reason': 'N/A',
+        'shadow_weights': {},       # 🆕 从 predictions_log.details_json 直读
+        'data_health': 'N/A',       # 🆕 从 predictions_log.details_json 直读
     }
 
     conn = sqlite3.connect(DB_PATH)
@@ -52,17 +55,28 @@ def get_latest_data():
         if prob_row:
             data['p_r4'], data['p_r5'], data['p_high_risk'] = float(prob_row[0] or 0), float(prob_row[1] or 0), float(prob_row[2] or 0)
 
+        # 🆕 从 predictions_log.details_json 一次性读全：micro / factor / event / shadow_weights / data_health
         try:
             micro_row = conn.execute("SELECT details_json FROM predictions_log WHERE forecast_date=?", (asof,)).fetchone()
+            if not micro_row:
+                micro_row = conn.execute("SELECT details_json FROM predictions_log ORDER BY forecast_date DESC LIMIT 1").fetchone()
             if micro_row and micro_row[0]:
                 detail_json = json.loads(micro_row[0])
                 micro_res = detail_json.get('micro_trigger', {})
-                data['micro_status'], data['micro_score'], data['micro_details'] = micro_res.get('status', 'N/A'), micro_res.get('score', 0.0), micro_res.get('details', {})
+                data['micro_status'], data['micro_score'], data['micro_details'] = (
+                    micro_res.get('status', 'N/A'), micro_res.get('score', 0.0), micro_res.get('details', {})
+                )
                 factor_res = detail_json.get('factor_concentration', {})
                 data['factor_status'], data['factor_msg'] = factor_res.get('status', 'N/A'), factor_res.get('msg', 'N/A')
                 event_res = detail_json.get('event_interceptor', {})
                 data['event_perm'], data['event_reason'] = event_res.get('perm', 'N/A'), event_res.get('reason', 'N/A')
-        except: pass
+                # 🆕 直读 run_v4 已经算好的 shadow_weights，不再自己重算
+                data['shadow_weights'] = detail_json.get('shadow_weights') or {}
+                # 🆕 直读预置的数据健康状态
+                dh = detail_json.get('data_health', {})
+                data['data_health'] = dh.get('verdict', 'N/A') if isinstance(dh, dict) else str(dh)
+        except Exception as e:
+            print(f"⚠️ 读取 details_json 失败: {e}")
 
         da_row = conn.execute("SELECT dxy, dxy_5y_pct, scenario, detail FROM dollar_anchor WHERE asof_date=?", (asof,)).fetchone()
         if not da_row: da_row = conn.execute("SELECT dxy, dxy_5y_pct, scenario, detail FROM dollar_anchor ORDER BY asof_date DESC LIMIT 1").fetchone()
@@ -91,7 +105,6 @@ def get_latest_data():
         row = conn.execute("SELECT lti_score, level FROM lti_engine ORDER BY asof_date DESC LIMIT 1").fetchone()
         if row: data['lti_score'], data['lti_level'] = round(row[0], 1), row[1]
 
-        # 🆕 采用代理层获取最新的数据
         def get_val(sid):
             try:
                 s = load(conn, sid, limit=1, verbose=False)
@@ -133,7 +146,6 @@ def get_latest_data():
         data['hl_imb'] = ((oi_series.iloc[-1] - oi_series.iloc[0]) / oi_series.iloc[0] * 100) if len(oi_series) >= 289 and oi_series.iloc[0] else 0.0
         data['lti_raw_imb'] = data['hl_imb']
 
-        # 保留 feishu_snapshot 作为某些聚合数据（如 ETF 流向）的兜底
         row = conn.execute("SELECT * FROM feishu_snapshot ORDER BY timestamp DESC LIMIT 1").fetchone()
         if row:
             cols = [d[0] for d in conn.execute("SELECT * FROM feishu_snapshot LIMIT 1").description]
@@ -149,13 +161,16 @@ def get_latest_data():
             data['gold'] = gold_val if gold_val > 0 else 'N/A'
             oil_val = get_val('WTI_OIL') or float(f_data.get('oil', 0) or 0)
             data['oil'] = oil_val if oil_val > 0 else 'N/A'
-            
+
             raw_cny = float(f_data.get('usdcny_mid', 0) or 0)
             if raw_cny == 0: raw_cny = get_val('USDCNY_MID')
             data['usdcny'] = raw_cny / 100.0 if raw_cny > 10 else raw_cny
-    except Exception as e: print(f"⚠️ 读取数据库失败: {e}")
-    finally: conn.close()
+    except Exception as e:
+        print(f"⚠️ 读取数据库失败: {e}")
+    finally:
+        conn.close()
     return data
+
 
 def get_dual_phase(data):
     if data['cali_score'] >= 60: return '🔴 上半场（去杠杆中）', '50-70%'
@@ -163,14 +178,25 @@ def get_dual_phase(data):
     elif data['risk_gate'] in ('ORANGE', 'YELLOW'): return '🟡 过渡期（政策底已现，市场底待确认）', '40-60%'
     else: return '🟢 下半场（降息重估）', '10-20%'
 
+
 def main():
     if not WEBHOOK or not SECRET: return
     d = get_latest_data()
-    try:
-        weights, cash_pct = get_portfolio_advice(d['risk_gate'], d['frag_score'], caps_cu=d['caps_cu'] if isinstance(d['caps_cu'], float) else 0)
-        health_text = get_data_health()
-    except Exception as e:
-        weights, cash_pct, health_text = {'BTC': 0, 'GOLD': 0, 'SHY': 0}, 100, f"❌ 仓位引擎异常: {e}"
+
+    # 🆕 直读 run_v4 已经算好的 shadow_weights（0-1 小数），转成 0-100 百分比
+    sw = d.get('shadow_weights') or {}
+    weights_pct = {}
+    cash_pct = 100.0
+    if sw:
+        total = float(sum(sw.values()))
+        cash_pct = max(0.0, (1.0 - total) * 100.0)
+        weights_pct = {k: v * 100.0 for k, v in sw.items()}
+    else:
+        # 回退：如果 predictions_log 里没有 shadow_weights（说明 run_v4.py 尚未加 details 那一行）
+        print("⚠️ predictions_log.details_json 中未找到 shadow_weights，飞书将显示空仓")
+
+    # 🆕 数据健康直接从 details_json 读，不再调用 get_data_health
+    health_text = d.get('data_health') or 'N/A'
 
     if d['caps_cu'] != 'N/A' and isinstance(d['caps_cu'], float) and d['caps_cu'] >= 80:
         action_guide = "🚨 极度危险：沪铜发生史诗级逼仓，宏观流动性枯竭，现金为王，切勿进场！"
@@ -190,9 +216,9 @@ def main():
     bj_time = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
     prob_icon = "🔴" if d['p_high_risk'] >= 0.5 else "🟠" if d['p_high_risk'] >= 0.3 else "🟡" if d['p_high_risk'] >= 0.15 else "🟢"
     phase_text, _ = get_dual_phase(d)
-    
+
     hedge_text = "• SPX: Buy 3M 5% OTM Put\n• BTC: Buy 1M 10% OTM Put" if d['risk_gate'] == 'RED' or d['cali_score'] > 70 else "• SPX: Collar 成本≈0" if d['risk_gate'] == 'ORANGE' else "• 当前无需对冲"
-    
+
     text = f"""📊 **GMRE 4.1 全息风控晨报** - {d['asof']}
 ====================================
 🚦 **Risk Gate**: {d['risk_gate']}
@@ -208,9 +234,9 @@ def main():
   • DXY: {d['dxy']:.2f} (5y_pct={f"{d['dxy_5y_pct']:.1f}%" if d['dxy_5y_pct'] is not None else "N/A"})
   • 情景判定: {d['dollar_scenario']}
 ====================================
-💼 **风险平价仓位建议**:
+💼 **风险平价仓位建议** (来自 run_v4 真实执行):
   • 现金留存: {cash_pct:.1f}%
-  • BTC: {weights.get('BTC', 0):.1f}% | 黄金: {weights.get('GOLD', 0):.1f}% | 短债: {weights.get('SHY', 0):.1f}%
+  • BTC: {weights_pct.get('BTC', 0):.1f}% | 黄金: {weights_pct.get('GOLD', 0):.1f}% | 短债: {weights_pct.get('SHY', 0):.1f}% | 长债: {weights_pct.get('TLT', 0):.1f}% | 标普: {weights_pct.get('SP500', 0):.1f}% | 原油: {weights_pct.get('WTI', 0):.1f}%
 ====================================
 🌍 **大类资产**:
   • 黄金: ${d['gold'] if isinstance(d['gold'], str) else f"{d['gold']:.2f}"} | 原油: ${d['oil'] if isinstance(d['oil'], str) else f"{d['oil']:.2f}"}
@@ -229,8 +255,11 @@ def main():
     ts = str(int(time.time()))
     payload = {"timestamp": ts, "sign": gen_sign(ts, SECRET), "msg_type": "text", "content": {"text": text}}
     r = requests.post(WEBHOOK, json=payload, timeout=10)
-    if r.status_code == 200 and r.json().get('code') == 0: print("✅ GMRE 4.1 全息晨报已成功推送到飞书！")
-    else: print(f"❌ 飞书推送失败: {r.text}")
+    if r.status_code == 200 and r.json().get('code') == 0:
+        print("✅ GMRE 4.1 全息晨报已成功推送到飞书！")
+    else:
+        print(f"❌ 飞书推送失败: {r.text}")
+
 
 if __name__ == "__main__":
     main()

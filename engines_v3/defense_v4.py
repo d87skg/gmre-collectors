@@ -1,4 +1,4 @@
-"""engines_v3/defense_v4.py - 防线0-7（Fail-Closed 安全增强版）"""
+"""engines_v3/defense_v4.py - 防线0-7（v4.2: 时区统一 + asof 可复现 + HY Fail-Closed）"""
 import sys as _sys
 from pathlib import Path as _Path
 _PROJECT_ROOT = _Path(__file__).resolve().parents[1]
@@ -14,17 +14,29 @@ from datetime import datetime
 import os
 DB_PATH = os.environ.get('GMRE_DB_PATH', 'data/macro.db')
 
-from core import data_proxy   # 唯一取数入口（阶段 3 第三步接管）
+from core import data_proxy
 
 
-def _load(conn, sid, limit=60):
-    """取数全部下沉到 core.data_proxy —— 签名、返回结构（datetime index 的 Series）不变。
+def _load(conn, sid, limit=60, asof=None):
+    return data_proxy.load_for_engine(
+        conn, sid, limit, as_index='datetime', asof=asof
+    )
 
-    原实现的三处隐患随之消失：裸 SQL 直接读 legacy `observations`、按行数限量导致
-    日内序列被压扁、`ORDER BY timestamp DESC` 让同日多版本随机取值。
-    P0 序列（TGA 等）陈旧/脏值会抛异常交给入口阻断；P1/P2 就地降级为空 Series。
+
+def _days_since(latest_date, asof_str):
+    """返回 latest_date 到 asof_str 的自然日差。
+    统一处理 tz-aware / tz-naive 两种 Timestamp，避免 .tz_localize(None) 对 naive 抛错。
     """
-    return data_proxy.load_for_engine(conn, sid, limit, as_index='datetime')
+    try:
+        ts = pd.Timestamp(latest_date)
+        if ts.tz is not None:
+            ts = ts.tz_localize(None)
+        asof_dt = pd.Timestamp(asof_str)
+        if asof_dt.tz is not None:
+            asof_dt = asof_dt.tz_localize(None)
+        return int((asof_dt - ts).days)
+    except Exception:
+        return None
 
 
 def evaluate_v4(asof: str) -> dict:
@@ -34,17 +46,15 @@ def evaluate_v4(asof: str) -> dict:
 
     conn = sqlite3.connect(DB_PATH)
     try:
-        # 拉数据
-        wti = _load(conn, 'WTI_OIL', 30)
-        cpi = _load(conn, 'CPIAUCSL', 30)
-        mich = _load(conn, 'MICH_1Y_EXPECT', 30)
-        yc2y = _load(conn, 'YC2Y', 30)
-        y10 = _load(conn, 'YC10Y', 30)
-        rrp = _load(conn, 'RRP_BALANCE', 30)
-        sofr = _load(conn, 'SOFR', 30)
-        effr = _load(conn, 'EFFR', 30)
-        hyg = _load(conn, 'HY_SPREAD', 30)
-        spx = _load(conn, 'SP500', 60)
+        wti = _load(conn, 'WTI_OIL', 30, asof=asof)
+        mich = _load(conn, 'MICH_1Y_EXPECT', 30, asof=asof)
+        yc2y = _load(conn, 'YC2Y', 30, asof=asof)
+        y10 = _load(conn, 'YC10Y', 30, asof=asof)
+        sofr = _load(conn, 'SOFR', 30, asof=asof)
+        effr = _load(conn, 'EFFR', 30, asof=asof)
+        # 走别名链：HY_OAS → HY_SPREAD（与全局数据资格口径一致）
+        hyg = _load(conn, 'HY_OAS', 30, asof=asof)
+        spx = _load(conn, 'SP500', 60, asof=asof)
     finally:
         conn.close()
 
@@ -54,8 +64,24 @@ def evaluate_v4(asof: str) -> dict:
     d0_conds = []
     if len(wti) >= 1:
         d0_conds.append(('WTI>$105', float(wti.iloc[-1]) > 105, f'${float(wti.iloc[-1]):.1f}'))
+
+    # 强制校验 MICH 新鲜度（asof 对齐，时区统一）
+    mich_valid = False
+    mich_reason = 'MISSING'
     if len(mich) >= 1:
-        d0_conds.append(('通胀预期>4.0%', float(mich.iloc[-1]) > 4.0, f'{float(mich.iloc[-1]):.2f}%'))
+        lag = _days_since(mich.index[-1], asof)
+        if lag is not None and lag <= 45:
+            mich_valid = True
+            mich_reason = f'OK (lag={lag}d)'
+        elif lag is not None:
+            mich_reason = f'STALE (lag={lag}d > 45d)'
+
+    if mich_valid:
+        d0_conds.append(('通胀预期>4.0%', float(mich.iloc[-1]) > 4.0,
+                         f'{float(mich.iloc[-1]):.2f}%'))
+    else:
+        d0_conds.append(('通胀预期>4.0%', False, f'[✗] {mich_reason}'))
+
     d0 = sum(1 for c in d0_conds if c[1]) >= 2
     lines.append({
         'line': '防线0', 'name': 'INFLATION_SHOCK',
@@ -66,7 +92,7 @@ def evaluate_v4(asof: str) -> dict:
     # ============ 防线1：POLICY_SHOCK ============
     d1_conds = []
     if len(yc2y) >= 6:
-        y2_5d = (float(yc2y.iloc[-1]) - float(yc2y.iloc[-min(5, len(yc2y))])) * 100  # bp
+        y2_5d = (float(yc2y.iloc[-1]) - float(yc2y.iloc[-min(5, len(yc2y))])) * 100
         d1_conds.append(('2Y 5D>+15bp', y2_5d > 15, f'+{y2_5d:.1f}bp'))
     d1 = sum(1 for c in d1_conds if c[1]) >= 1
     lines.append({
@@ -86,26 +112,22 @@ def evaluate_v4(asof: str) -> dict:
         'action': '降久期，减仓长债+成长股'
     })
 
-    # ============ 防线3：LIQUIDITY_BUFFER_DEPLETION (Fail-Closed 强制熔断版) ============
+    # ============ 防线3：LIQUIDITY_BUFFER_DEPLETION ============
     d3_conds = []
     try:
         _g3 = run_rrp_guard(verbose=False)
-        
         if _g3.downstream_action in (DownstreamAction.BLOCK, DownstreamAction.OBSERVE):
             d3_conds.append(('RRP_DATA_CRITICAL', True, f"数据源异常: {_g3.status.value}"))
             d3 = True
             print(f"🚨 [FAIL-CLOSED] 防线3强制触发：RRP 数据不可靠 ({_g3.status.value})")
-            
         elif _g3.primary_value is not None:
             _rrp_used = float(_g3.primary_value)
             _rrp_src = _g3.primary_source
             d3_conds.append((f'RRP<50B ({_rrp_src})', _rrp_used < 50, f'{_rrp_used:.2f}B'))
             d3 = sum(1 for c in d3_conds if c[1]) >= 1
-            
         else:
             d3_conds.append(('RRP_NONE', True, "无主源数据"))
             d3 = True
-            
     except Exception as _e:
         d3_conds.append(('RRP_GUARD_ERROR', True, str(_e)[:50]))
         d3 = True
@@ -117,27 +139,24 @@ def evaluate_v4(asof: str) -> dict:
         'action': '流动性缓冲耗尽或数据盲区，强制提升现金至40%+'
     })
 
-    # ============ 防线4：FUNDING_STRESS (Fail-Closed 强制熔断版) ============
+    # ============ 防线4：FUNDING_STRESS ============
     d4_conds = []
-    d4 = False  # 👈 核心修复：必须在这里初始化 d4
+    d4 = False
     sofr_valid = len(sofr) >= 1
     effr_valid = len(effr) >= 1
-    
+
     if not sofr_valid or not effr_valid:
         d4_conds.append(('SOFR/EFFR_DATA_MISSING', True, '数据缺失'))
         d4 = True
         print("🚨 [FAIL-CLOSED] 防线4强制触发：SOFR/EFFR 数据缺失")
     else:
-        try:
-            latest_date = pd.to_datetime(sofr.index[-1]).tz_localize(None)
-            days_lag = (datetime.now() - latest_date).days
-            if days_lag > 3:
-                d4_conds.append(('SOFR_DATA_STALE', True, f'滞后 {days_lag} 天'))
-                d4 = True
-                print(f"🚨 [FAIL-CLOSED] 防线4强制触发：SOFR 数据过期 (滞后 {days_lag} 天)")
-        except Exception:
-            pass
-            
+        # 时区统一 + asof 对齐
+        lag = _days_since(sofr.index[-1], asof)
+        if lag is not None and lag > 3:
+            d4_conds.append(('SOFR_DATA_STALE', True, f'滞后 {lag} 天'))
+            d4 = True
+            print(f"🚨 [FAIL-CLOSED] 防线4强制触发：SOFR 数据过期 (滞后 {lag} 天)")
+
         if not d4:
             spread = (float(sofr.ffill().iloc[-1]) - float(effr.ffill().iloc[-1])) * 100
             d4_conds.append(('SOFR-EFFR>+3bp', spread > 3, f'{spread:.2f}bp'))
@@ -151,12 +170,24 @@ def evaluate_v4(asof: str) -> dict:
 
     # ============ 防线5：CREDIT_STRESS ============
     d5_conds = []
-    if len(hyg) >= 20:
+    d5 = False
+
+    if len(hyg) == 0:
+        # Fail-Closed：HY 完全缺失时，宁可报信用风险，不静默漏报
+        d5_conds.append(('HY_DATA_MISSING', True, '数据完全缺失'))
+        d5 = True
+        print("🚨 [FAIL-CLOSED] 防线5强制触发：HY 信用利差数据完全缺失")
+    elif len(hyg) >= 20:
         hyg_now = float(hyg.iloc[-1])
-        hyg_20d_chg = (hyg_now - float(hyg.iloc[-min(20, len(hyg))])) / float(hyg.iloc[-min(20, len(hyg))]) if float(hyg.iloc[-min(20, len(hyg))]) else 0
+        hyg_20d = float(hyg.iloc[-min(20, len(hyg))])
+        hyg_20d_chg = (hyg_now - hyg_20d) / hyg_20d if hyg_20d else 0
         _hy_dir = '走阔' if hyg_20d_chg > 0 else '收窄'
         d5_conds.append((f'HY 20D{_hy_dir}>10%', hyg_20d_chg > 0.10, f'{hyg_20d_chg*100:+.2f}%'))
-    d5 = sum(1 for c in d5_conds if c[1]) >= 1
+        d5 = sum(1 for c in d5_conds if c[1]) >= 1
+    else:
+        # 数据不足 20 条但 > 0：不误用数据，但也不 Fail-Closed（数据不足以判断）
+        d5_conds.append(('HY_SAMPLE_INSUFFICIENT', False, f'仅 {len(hyg)} 条，需 20 条'))
+
     lines.append({
         'line': '防线5', 'name': 'CREDIT_STRESS',
         'triggered': d5, 'conditions': d5_conds,
@@ -168,7 +199,10 @@ def evaluate_v4(asof: str) -> dict:
     if len(spx) >= 30 and len(y10) >= 30:
         spx_ret = spx.pct_change().dropna()
         y10_chg = y10.diff().dropna()
-        df = pd.concat([spx_ret.rename('s'), y10_chg.rename('y')], axis=1, sort=True).dropna()
+        df = pd.concat(
+            [spx_ret.rename('s'), y10_chg.rename('y')],
+            axis=1
+        ).dropna()
         if len(df) >= 5:
             corr5 = float(df.tail(5).corr().iloc[0, 1])
             d6_conds.append(('股债5D>0.5', corr5 > 0.5, f'{corr5:.2f}'))
@@ -184,10 +218,10 @@ def evaluate_v4(asof: str) -> dict:
     d5_layer = next((l for l in lines if l['line'] == '防线5'), None)
     d6_layer = next((l for l in lines if l['line'] == '防线6'), None)
 
-    d7 = (
-        (d4_layer and d4_layer['triggered']) and
-        (d5_layer and d5_layer['triggered']) and
-        (d6_layer and d6_layer['triggered'])
+    d7 = bool(
+        d4_layer and d4_layer['triggered'] and
+        d5_layer and d5_layer['triggered'] and
+        d6_layer and d6_layer['triggered']
     )
     lines.append({
         'line': '防线7', 'name': 'SYSTEMIC',
@@ -209,7 +243,6 @@ def evaluate_v4(asof: str) -> dict:
         'lines': lines
     }
 
-    # 落盘
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS defense_v4 (

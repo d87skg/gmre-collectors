@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""engines_v3/lti_engine.py - LTI 清算透明度引擎（v3.2: 带备用源追溯）"""
+"""engines_v3/lti_engine.py - LTI 清算透明度引擎（v3.4: 强隔离缺失值）"""
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,27 +27,27 @@ def compute_lti(asof=None):
 
     latest = df.iloc[0] if not df.empty else {}
     
-    # 🆕 数据来源追溯：检查是否来自备用源
     if not df.empty:
         source_val = str(latest.get('source', ''))
         if 'fallback' in source_val or 'tencent' in source_val:
             print(f"  ⚠️ [数据追溯] 当前微观快照来自备用源 ({source_val})，决策置信度降级")
 
     def to_f(v):
-        try: return float(v) if pd.notna(v) and str(v) != '' else 0.0
-        except: return 0.0
+        """安全解析：如果为空/NaN，返回 None，而不是 0"""
+        if v is None or pd.isna(v) or str(v).strip() == '':
+            return None
+        try: return float(v)
+        except: return None
 
-    # 1. 提取飞书数据
-    fr_cross = to_f(latest.get('fr_cross_diff')) if not df.empty else 0.0
-    bitget_fr = to_f(latest.get('bitget_btc_fr')) if not df.empty else (fr_series.iloc[-1] if not fr_series.empty else 0.0)
-    hl_imb = to_f(latest.get('hl_imbalance_btc')) if not df.empty else 0.0
-    coinbase_prem = to_f(latest.get('coinbase_premium')) if not df.empty else 0.0
-    stablecoin_chg = to_f(latest.get('stablecoin_30d_chg')) if not df.empty else 0.0
+    fr_cross = to_f(latest.get('fr_cross_diff')) if not df.empty else None
+    bitget_fr = to_f(latest.get('bitget_btc_fr')) if not df.empty else (float(fr_series.iloc[-1]) if not fr_series.empty else None)
+    hl_imb = to_f(latest.get('hl_imbalance_btc')) if not df.empty else None
+    coinbase_prem = to_f(latest.get('coinbase_premium')) if not df.empty else None
 
     scores, active_weights, details = {}, {}, {}
 
     # 维度 1：跨所资金费率差异 (15%)
-    if fr_cross != 0.0:
+    if fr_cross is not None:
         scores['FR_Divergence'] = min(max(fr_cross * 5, 0), 100)
         active_weights['FR_Divergence'] = 0.15
         details['FR_Divergence'] = f"{scores['FR_Divergence']:.1f} (观测)"
@@ -55,23 +55,29 @@ def compute_lti(asof=None):
         scores['FR_Divergence'], active_weights['FR_Divergence'], details['FR_Divergence'] = None, 0.0, "MISSING_DATA"
 
     # 维度 2：极端费率 (15%)
-    if bitget_fr != 0.0:
+    if bitget_fr is not None:
         s2 = min(abs(bitget_fr), 100)
         scores['FR_Extreme'], active_weights['FR_Extreme'], details['FR_Extreme'] = s2, 0.15, f"{s2:.1f} (观测)"
     else:
         scores['FR_Extreme'], active_weights['FR_Extreme'], details['FR_Extreme'] = None, 0.0, "MISSING_DATA"
 
     # 维度 3：持仓脆弱性 (15%)
+    oi_valid = False
     if len(oi_series) >= 20:
-        current_oi, prev_oi = oi_series.iloc[-1], oi_series.iloc[-20]
-        oi_change = (current_oi - prev_oi) / prev_oi * 100 if prev_oi else 0
-        s3 = min(abs(oi_change) * 10, 100)
-        scores['OI_Fragility'], active_weights['OI_Fragility'], details['OI_Fragility'] = s3, 0.15, f"{s3:.1f} (20期变幅 {oi_change:+.1f}%)"
-    else:
-        scores['OI_Fragility'], active_weights['OI_Fragility'], details['OI_Fragility'] = None, 0.0, f"MISSING_DATA (仅{len(oi_series)}行)"
+        last_oi_date = pd.to_datetime(oi_series.index[-1])
+        asof_date = pd.to_datetime(asof_str)
+        if (asof_date - last_oi_date).days <= 7:
+            oi_valid = True
+            current_oi, prev_oi = oi_series.iloc[-1], oi_series.iloc[-20]
+            oi_change = (current_oi - prev_oi) / prev_oi * 100 if prev_oi else 0
+            s3 = min(abs(oi_change) * 10, 100)
+            scores['OI_Fragility'], active_weights['OI_Fragility'], details['OI_Fragility'] = s3, 0.15, f"{s3:.1f} (20期变幅 {oi_change:+.1f}%)"
+    
+    if not oi_valid:
+        scores['OI_Fragility'], active_weights['OI_Fragility'], details['OI_Fragility'] = None, 0.0, "STALE_DATA (OI 超过 7 天)"
 
     # 维度 4：美国机构现货溢价 (20%)
-    if not df.empty and 'coinbase_premium' in latest:
+    if coinbase_prem is not None:
         if coinbase_prem < 0:
             s4 = min(abs(coinbase_prem) / 0.2 * 100, 100)
             scores['US_Inst_Selling'], active_weights['US_Inst_Selling'], details['US_Inst_Selling'] = s4, 0.20, f"{s4:.1f} (抛压 {coinbase_prem:+.3f}%)"
@@ -80,14 +86,16 @@ def compute_lti(asof=None):
     else:
         scores['US_Inst_Selling'], active_weights['US_Inst_Selling'], details['US_Inst_Selling'] = None, 0.0, "MISSING_DATA"
 
-    # 维度 5：稳定币失血 (20%)
+    # 维度 5：稳定币失血 (20%) 
     sc_val = None
     for col in ['stablecoin_30d_chg', 'stablecoin_chg', 'stablecoin_mcap_30d']:
-        if not df.empty and col in latest and pd.notna(latest[col]):
-            sc_val = to_f(latest[col])
-            break
+        if not df.empty and col in latest:
+            v = to_f(latest[col])
+            if v is not None:
+                sc_val = v
+                break
             
-    if sc_val is not None and sc_val != 0:
+    if sc_val is not None:
         if sc_val < 0:
             s5 = min(abs(sc_val) / 20.0 * 100, 100)
             scores['Stablecoin_Bleed'], active_weights['Stablecoin_Bleed'], details['Stablecoin_Bleed'] = s5, 0.20, f"{s5:.1f} (失血 {sc_val:+.1f}B)"
@@ -136,7 +144,10 @@ def compute_lti(asof=None):
     conn.execute("INSERT OR REPLACE INTO lti_engine (asof_date, lti_score, level) VALUES (?, ?, ?)", (asof_str, lti_score, level))
     conn.commit(); conn.close()
 
-    return {'asof': asof_str, 'lti_score': round(lti_score, 1), 'level': level, 'details': details, 'raw': {}}
+    return {
+        'asof': asof_str, 'lti_score': round(lti_score, 1), 'level': level, 'details': details,
+        'raw': {'bitget_fr': bitget_fr, 'hl_imbalance': hl_imb, 'fr_cross_diff': fr_cross}
+    }
 
 if __name__ == "__main__":
     res = compute_lti()

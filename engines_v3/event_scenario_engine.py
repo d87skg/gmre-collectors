@@ -23,33 +23,28 @@ class TradePerm(IntFlag):
 CFG = {
     "CPI_LOCK_FIRST_MIN": 60,
     "CPI_LIMIT_MIN": 240,
-    "STABILIZE_SECONDS": 600,  # 指标需要持续达标 10min
+    "STABILIZE_SECONDS": 600,
     "THRESHOLD_CORE_CPI_HIGH": 4.1,
     "THRESHOLD_CORE_CPI_LOW": 3.5,
-    "THRESHOLD_SOFR_EFFR": 5.0,  # bp
-    "THRESHOLD_HY_SPREAD_CHG": 0.5,  # 5日变动 %
-    "THRESHOLD_CU_SPREAD": 10.0,  # %
-    "THRESHOLD_LME_COPPER_DN": -2.5,  # 5min 回撤阈值
+    "THRESHOLD_SOFR_EFFR": 5.0,
+    "THRESHOLD_HY_SPREAD_CHG": 0.5,
+    "THRESHOLD_CU_SPREAD": 10.0,
+    "THRESHOLD_LME_COPPER_DN": -2.5,
 }
 
-# ===================== 内部状态防抖快照 =====================
-_snapshot_cache: Dict[str, Dict] = {}
-
 def check_contagion(sofr_effr_spread: float, hy_spread_chg: float, lme_cu_5min_ret: float) -> bool:
-    """全局传染触发器：真正跨资产流动性踩踏"""
     return (sofr_effr_spread > CFG["THRESHOLD_SOFR_EFFR"] and
             hy_spread_chg > CFG["THRESHOLD_HY_SPREAD_CHG"] and
             lme_cu_5min_ret < CFG["THRESHOLD_LME_COPPER_DN"])
 
 def cu_is_local_only(cu_spread: float, lme_cu_5min_ret: float, margin_hike: bool) -> bool:
-    """True = 仅上期所局部逼仓解套，不是宏观传染"""
     if margin_hike: return True
     if cu_spread < CFG["THRESHOLD_CU_SPREAD"] and lme_cu_5min_ret > CFG["THRESHOLD_LME_COPPER_DN"]:
         return True
     return False
 
 def evaluate_event_scenario(
-    cpi_core_yoy: float,
+    cpi_core_yoy: Optional[float],
     sofr_effr_spread: float,
     hy_spread_chg: float,
     cu_spread: float,
@@ -62,6 +57,10 @@ def evaluate_event_scenario(
     主情景评估入口。
     返回：(perm:TradePerm, reason:str, contagion:bool)
     """
+    # 🆕 P0-1 核心修复：类型与缺失值强校验
+    if cpi_core_yoy is None or pd.isna(cpi_core_yoy):
+        return TradePerm.REDUCE, "⛔ 通胀预期数据缺失或过期，强制拦截所有新建风险敞口。", False
+
     contagion = check_contagion(sofr_effr_spread, hy_spread_chg, lme_cu_5min_ret)
     cu_local = cu_is_local_only(cu_spread, lme_cu_5min_ret, margin_hike)
 
