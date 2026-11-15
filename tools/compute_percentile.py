@@ -24,9 +24,10 @@ SERIES_MAP = {
     'BTC_FUNDING_RATE_1H': 'BTC_FUNDING_RATE_1H', 'BTC_OI_VALUE_HIST': 'BTC_OI_VALUE_HIST'
 }
 
+# 🆕 修复了 CPI 和 CPI_CORE 的区间，匹配 core/units.py 的绝对指数 (0-600)
 SANITY_CHECKS = {
     'PAYEMS': (100000, 300000), 'PAYROLLS': (100000, 300000),
-    'US_CPI_YOY': (-10, 50), 'CPI': (-10, 50), 'UNRATE': (0, 30),
+    'US_CPI_YOY': (-10, 50), 'CPI': (0, 600), 'CPI_CORE': (0, 600), 'UNRATE': (0, 30),
     'YC10Y': (-5, 20), 'YC2Y': (-5, 20), 'RRP_BALANCE': (0, 5000000),
     'CN_M1_YOY': (-30, 50), 'CN_M2_YOY': (-10, 50), 'CN_PMI_MFG': (30, 70),
     'CN_10Y_YIELD': (0, 10), 'JP_10Y': (-1, 10), 'JP_CPI_YOY': (-5, 20),
@@ -64,11 +65,9 @@ def main():
     
     for sid, mapped in targets:
         try:
-            # 🆕 走代理层，返回的是 Series（索引是日期，值是数据）
             s = load(conn, sid, limit=100000)
             if s is None or s.empty: continue
             
-            # 🆕 构建标准 DataFrame 用于计算
             df = pd.DataFrame({'dt': s.index, 'value': s.values})
             df['dt'] = pd.to_datetime(df['dt'], errors='coerce').dt.strftime('%Y-%m-%d')
             df = df[df['dt'] <= as_of]

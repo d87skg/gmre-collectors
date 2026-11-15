@@ -64,7 +64,7 @@ def fetch_yahoo(symbol, series_id):
         pass # 静默失败，转入备用
     
     # 🆕 备用源：腾讯实时快照（仅补最新一天）
-    from collectors.fallback_collectors import fetch_tencent_realtime
+    from fallback_collectors import fetch_tencent_realtime
     fallback_map = {
         'SPY_PRICE': 'usSPY', 'GLD_PRICE': 'usGLD', 'TLT_PRICE': 'usTLT',
         'SHY_PRICE': 'usSHY', 'USD_CNH': 'fx_susdcnh', 'WTI_OIL': 'hf_CL',

@@ -97,33 +97,15 @@ def _read_current_state(conn, asof):
 
 
 def _read_risk_gate(conn, asof):
-    """从 stress + fragility 推算 Risk Gate（修复 CREDIT 误匹配）"""
+    """🆕 修复：绝对不自己重算，直接读取 run_v4.py 落库的最终结果"""
     try:
-        frag = conn.execute(
-            "SELECT fragility_score FROM fragility_engine WHERE asof_date=?",
+        r = conn.execute(
+            "SELECT risk_gate FROM daily_summary WHERE asof_date=?",
             (asof,)
         ).fetchone()
-        stress = conn.execute(
-            "SELECT overall FROM stress_overlay_v2 WHERE asof_date=?",
-            (asof,)
-        ).fetchone()
-
-        frag_score = float(frag[0]) if frag and frag[0] else 50
-        stress_str = stress[0] if stress else ''
-
-        if 'SYSTEMIC' in stress_str:
-            return 'BLACK'
-        # 🆕 修复：严格匹配 CREDIT_STRESS，避免和 USD_CREDIT_DEGRADATION 混淆
-        elif frag_score >= 80 or ('FUNDING_STRESS' in stress_str and 'CREDIT_STRESS' in stress_str):
-            return 'RED'
-        elif frag_score >= 65 or stress_str.count('+') >= 1:
-            return 'ORANGE'
-        elif frag_score >= 50:
-            return 'YELLOW'
-        else:
-            return 'GREEN'
+        return r[0] if r else 'UNKNOWN'
     except Exception:
-        return None
+        return 'UNKNOWN'
 
 
 def log_today(asof: str = None) -> dict:
