@@ -69,8 +69,8 @@ REGISTRY = {
         'unit': PCT, 'range': (-5.0, 30.0), 'sla': 45,
         'severity': 'P1', 'freq': 'monthly',
         'aliases': {
-            'FEDFUNDS_BIS': PCT,        # BIS 日频央行利率
-            'FEDFUNDS_ECONDASH': PCT,   # 备用（暂未启用）
+            'FEDFUNDS_NYFED': PCT,      # NY Fed EFFR 月均（定义一致）
+            'FEDFUNDS_BIS': PCT,        # BIS 日频政策利率（定义不同，但保留作最后兜底）
         },
     },
     'HY_OAS': {
