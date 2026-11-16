@@ -32,6 +32,17 @@ echo [1.5/16] Realtime market data (SP500/VIX override)...
 echo [2/16] Enhanced liquidity data...
 if exist collectors\enhanced_data.py (.venv\Scripts\python.exe -X utf8 collectors\enhanced_data.py)
 
+:: 🆕 多源冗余采集器 (CoinGecko / BIS / TwelveData)
+echo [2.1/16] Multi-source redundancy collectors...
+if exist collectors\coingecko_collector.py (.venv\Scripts\python.exe -X utf8 collectors\coingecko_collector.py)
+if exist collectors\bis_collector.py (.venv\Scripts\python.exe -X utf8 collectors\bis_collector.py)
+if exist collectors\twelvedata_collector.py (.venv\Scripts\python.exe -X utf8 collectors\twelvedata_collector.py)
+
+echo [2.1/16] Multi-source redundancy collectors...
+if exist collectors\coingecko_collector.py (.venv\Scripts\python.exe -X utf8 collectors\coingecko_collector.py)
+if exist collectors\bis_collector.py (.venv\Scripts\python.exe -X utf8 collectors\bis_collector.py)
+if exist collectors\twelvedata_collector.py (.venv\Scripts\python.exe -X utf8 collectors\twelvedata_collector.py)
+
 echo [2.5/16] Global data sanitizer...
 .venv\Scripts\python.exe -X utf8 tools\data_sanitizer.py
 if %errorlevel% neq 0 (

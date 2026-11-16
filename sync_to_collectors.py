@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""sync_to_collectors.py - 从 D:\HGZC 同步到 D:\HGZC-collectors（单向 A→B）"""
+r"""sync_to_collectors.py - 从 D:\HGZC 同步到 D:\HGZC-collectors（单向 A→B）"""
 import shutil
 import fnmatch
 from pathlib import Path

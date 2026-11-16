@@ -1,0 +1,32 @@
+# 数据源优先级与限流配置
+sources:
+  bis:
+    priority: 1
+    rate_limit: { calls_per_min: 60 }
+    indicators:
+      FEDFUNDS: { dataset: "WS_CBPOL", series: "D.US" }
+      DXY_PROXY: { dataset: "WS_EER", series: "D.US" }
+      ECB_RATE: { dataset: "WS_CBPOL", series: "D.XM" }
+  econdash:
+    priority: 2
+    rate_limit: { calls_per_min: 30, calls_per_day: 300 }
+    indicators:
+      FEDFUNDS: { slug: "interest-rate", country: "USA" }
+      CPI: { slug: "cpi-inflation-rate-percent", country: "USA" }
+  eulerpool:
+    priority: 3
+    rate_limit: { calls_per_month: 100000 }
+    indicators:
+      FEDFUNDS: { endpoint: "/macro/fred/FEDFUNDS" }
+  coingecko:
+    priority: 1
+    rate_limit: { calls_per_min: 30 }
+    indicators:
+      BTC_SPOT_PRICE_1H: { coin_id: "bitcoin", days: 365 }
+      ETH_PRICE: { coin_id: "ethereum", days: 365 }
+  twelvedata:
+    priority: 2
+    rate_limit: { calls_per_min: 8, calls_per_day: 800 }
+    indicators:
+      DXY_PROXY: { symbol: "DXY", interval: "1day" }
+      WTI_OIL: { symbol: "WTI", interval: "1day" }

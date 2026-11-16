@@ -1,21 +1,9 @@
 # -*- coding: utf-8 -*-
-"""core/data_proxy.py - 只读数据代理层（v4.2: 加入未来日期拦截）
+"""core/data_proxy.py - 只读数据代理层（v4.3: 多源择优版）
 
-所有引擎取数的**唯一入口**。签名与旧 `_load` 对齐：
-
-    load(conn, series_id, limit=60) -> pandas.Series
-
-流水线：别名归一 -> 取数（新表优先）-> 未来日期截断 -> 量纲归一 -> 值域净化
-        -> 截断窗口 -> 新鲜度校验 -> 血缘日志
-
-五个硬约束：
-  1. 日期一律按 **obs_date** 对齐（不是按行数、不是按 timestamp 字符串）；
-  2. 量纲一律换算到 units.REGISTRY 的 canonical 单位（TGA=百万美元 / RRP=十亿美元）；
-  3. 超区间的脏值（如 RRPONTSYD 的 399600）**绝不返回给引擎**，隔离并抛 DataUnitError；
-  4. 陈旧超 SLA 抛 DataStaleError —— 由 core.errors 的三级捕获决定阻断/降级/告警；
-  5. 🆕 凡观测日 > asof 的“未来数据”，物理截断，绝不进入计算。
-
-缺口一律用 NaN 呈现，本层**不做 ffill/bfill**。
+关键改动：
+  _resolve() 不再返回"第一个有数据的别名"，而是返回"日期最新的那个候选"。
+  这是实现多源冗余的核心——主源过期时自动降级到备源。
 """
 import sqlite3
 from datetime import datetime
@@ -26,22 +14,18 @@ from core import units
 from core.errors import (DataUnitError, DataStaleError, DataMissingError,
                          DataQualityError)
 
-# 读表顺序：新表（obs_date 语义完整）优先，迁移态退回 legacy
 _OBS_TABLES = (
     ('observations_v2', 'obs_date'),
     ('observations', 'timestamp'),
 )
 
 
-# ---------------------------------------------------------------- 取数
 def connect_ro(db_path):
-    """只读连接工厂（`mode=ro`）。"""
     p = str(db_path).replace('\\', '/')
     return sqlite3.connect(f'file:{p}?mode=ro', uri=True)
 
 
 def _read_one(conn, table, date_col, series_id, limit):
-    """从一张表读一个 series，按 obs_date 分区取每日最新版本再限量。"""
     day = f'substr({date_col}, 1, 10)'
     sql = (f'SELECT dt, value, source, unit FROM ('
            f'  SELECT {day} AS dt, value, source, unit,'
@@ -67,39 +51,48 @@ def _read_any(conn, series_id, limit):
 
 
 def _resolve(conn, series_id, limit):
-    """别名链解析：点名优先，0 行才走别名。"""
+    """🆕 在多源候选中选择"日期最新"的那个，实现自动降级。"""
     cid, entry = units.entry_of(series_id)
 
-    df, table = _read_any(conn, series_id, limit)
-    if df is not None:
-        return series_id, df, table, str(df['dt'].iloc[0])[:10]
+    # 收集所有候选（去重）
+    candidates = [series_id]
+    try:
+        for cand in units.candidates_of(series_id):
+            if cand not in candidates:
+                candidates.append(cand)
+    except Exception:
+        pass
 
-    for cand in units.candidates_of(series_id):
-        if cand == series_id:
-            continue
+    # 逐个尝试，记录每个候选的最新日期
+    results = []
+    for cand in candidates:
         df, table = _read_any(conn, cand, limit)
-        if df is not None:
-            return cand, df, table, str(df['dt'].iloc[0])[:10]
+        if df is not None and not df.empty:
+            latest = str(df['dt'].iloc[0])[:10]
+            results.append((cand, df, table, latest))
 
-    raise DataMissingError(series_id,
-                           context={'candidates': units.candidates_of(series_id)})
+    if not results:
+        raise DataMissingError(series_id,
+                               context={'candidates': candidates})
+
+    # 按日期降序排列，返回最新的那个
+    results.sort(key=lambda x: x[3], reverse=True)
+    used_id, df, table, latest = results[0]
+
+    # 如果 used_id 不是 canonical 本身，打出降级日志
+    if used_id != series_id:
+        print(f'  🔀 [proxy] {series_id} 主源缺失/过期，自动降级至备源 {used_id} '
+              f'(latest={latest})')
+
+    return used_id, df, table, latest
 
 
-# ---------------------------------------------------------------- 清洗
 def _clean(df, limit, priority=(), asof=None):
-    """按 obs_date 对齐：取每个观测日最新版本，截断未来，升序限量。"""
     df = df.copy()
     df['dt'] = df['dt'].astype(str).str.slice(0, 10)
     df = df[df['dt'].str.len() == 10]
-
-    # 🆕 P0-1 核心修复：物理拦截未来日期数据
     if asof:
-        future_mask = df['dt'] > asof
-        if future_mask.any():
-            dropped = df[future_mask]['dt'].unique().tolist()
-            # 由调用方的 verbose 参数决定是否打印，这里只做物理剔除
-            df = df[~future_mask]
-
+        df = df[df['dt'] <= asof]
     if priority:
         sel = df[df['source'].isin(priority)]
         if not sel.empty:
@@ -184,17 +177,13 @@ def _normalize(df, series_id, used_id, conn=None):
     return clean, dirty, factors, conflicts, nulls
 
 
-# ---------------------------------------------------------------- 主入口
 def load(conn, series_id, limit=60, *, as_index='datetime',
          asof=None, strict_fresh=True, verbose=True, tag=''):
     cid, entry = units.entry_of(series_id)
     asof = asof or datetime.now().strftime('%Y-%m-%d')
-    
-    used_id, df, table, latest = _resolve(conn, series_id, limit)
 
-    # 🆕 传入 asof 进行未来数据拦截
+    used_id, df, table, latest = _resolve(conn, series_id, limit)
     df = _clean(df, limit, entry.get('source_priority') or (), asof=asof)
-    
     clean, dirty, factors, unit_conflicts, null_rows = _normalize(df, cid, used_id, conn=conn)
 
     n_dirty = len(dirty)

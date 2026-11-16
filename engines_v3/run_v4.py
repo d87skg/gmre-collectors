@@ -178,7 +178,12 @@ def get_dual_phase_guide(gate, frag_score, cali_score, scenario, dxy_pct):
 
 
 def _probe(series_id):
+    """
+    数据体检探针：支持 series 别名链，**在所有候选中选择最新的那个**。
+    与 core.data_proxy._resolve 逻辑一致。
+    """
     from core import units
+
     candidates = [series_id]
     try:
         for cand in units.candidates_of(series_id):
@@ -186,6 +191,8 @@ def _probe(series_id):
                 candidates.append(cand)
     except Exception:
         pass
+
+    results = []
     for cand in candidates:
         for tbl, col in (('observations_v2', 'obs_date'), ('observations', 'timestamp')):
             try:
@@ -195,10 +202,17 @@ def _probe(series_id):
                 ).fetchone()
                 conn.close()
                 if row and row[0]:
-                    return {'obs_date': str(row[0])[:10], 'series_used': cand}
+                    results.append((cand, str(row[0])[:10]))
+                    break
             except sqlite3.OperationalError:
                 continue
-    return None
+
+    if not results:
+        return None
+
+    # 按日期最新排序，返回最新的
+    results.sort(key=lambda x: x[1], reverse=True)
+    return {'obs_date': results[0][1], 'series_used': results[0][0]}
 
 
 def data_preflight(asof=None):
